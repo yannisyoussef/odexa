@@ -1,0 +1,168 @@
+{
+  "openapi": "3.1.0",
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "info": {
+    "title": "Odexa Catalog API",
+    "version": "1.0.0",
+    "description": "Authenticated, tenant-scoped product catalog. The verified JWT tenant_id claim is the only tenant source; headers cannot override it. Reads allow any authenticated actor in that tenant. Writes require MERCHANT_ADMIN or MERCHANT_USER. SUPPORT and PLATFORM_ADMIN have no cross-tenant or merchant-write bypass. Prices are integer minor units in USD. Cross-tenant product IDs return 404."
+  },
+  "servers": [
+    {"url": "http://localhost:8080", "description": "Local gateway"},
+    {"url": "http://localhost:8081", "description": "Direct catalog in native local development"}
+  ],
+  "security": [{"bearerAuth": []}],
+  "tags": [{"name": "Products"}],
+  "paths": {
+    "/api/v1/products": {
+      "parameters": [{"$ref": "#/components/parameters/CorrelationId"}],
+      "get": {
+        "operationId": "listProducts",
+        "tags": ["Products"],
+        "summary": "List products in the actor's tenant",
+        "description": "Includes active and inactive products. Uses ascending PostgreSQL UUID ordering and a limit+1 keyset lookup, not an offset. The cursor is opaque: pass nextCursor unchanged, retaining the same q. Live pagination is not a snapshot: concurrent inserts after the cursor may appear and changes to matching text may change membership. No total count is returned.",
+        "parameters": [
+          {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}, "description": "Maximum products per page."},
+          {"name": "cursor", "in": "query", "schema": {"type": "string", "minLength": 48, "maxLength": 48, "pattern": "^[A-Za-z0-9_-]{48}$"}, "description": "Opaque nextCursor from the previous page. Invalid or empty cursors return 400."},
+          {"name": "q", "in": "query", "schema": {"type": "string", "maxLength": 200}, "description": "Case-insensitive literal substring search of name or description. Leading/trailing whitespace is removed. Blank means no filter; % and _ are literal characters, not wildcards."}
+        ],
+        "responses": {
+          "200": {"description": "Product page, scoped to the JWT tenant.", "headers": {"X-Correlation-ID": {"$ref": "#/components/headers/CorrelationId"}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProductPage"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "500": {"$ref": "#/components/responses/InternalError"},
+          "default": {"$ref": "#/components/responses/UnexpectedError"}
+        }
+      },
+      "post": {
+        "operationId": "createProduct",
+        "tags": ["Products"],
+        "summary": "Create a product in the merchant's tenant",
+        "description": "Requires MERCHANT_ADMIN or MERCHANT_USER. The service generates a UUID and starts version at 1. This operation is not idempotent; repeat POSTs create distinct products. No tenant or ID is accepted from the request body.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProductInput"}}}},
+        "responses": {
+          "201": {"description": "Product created.", "headers": {"ETag": {"$ref": "#/components/headers/ETag"}, "Location": {"description": "Relative URL of the created product.", "schema": {"type": "string", "format": "uri-reference"}}, "X-Correlation-ID": {"$ref": "#/components/headers/CorrelationId"}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Product"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "415": {"$ref": "#/components/responses/UnsupportedMediaType"},
+          "500": {"$ref": "#/components/responses/InternalError"},
+          "default": {"$ref": "#/components/responses/UnexpectedError"}
+        }
+      }
+    },
+    "/api/v1/products/{id}": {
+      "parameters": [
+        {"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+        {"$ref": "#/components/parameters/CorrelationId"}
+      ],
+      "get": {
+        "operationId": "getProduct",
+        "tags": ["Products"],
+        "summary": "Get one product in the actor's tenant",
+        "parameters": [{"name": "If-None-Match", "in": "header", "schema": {"type": "string"}, "description": "Optional HTTP entity-tag condition; a matching current ETag returns 304 without a body."}],
+        "responses": {
+          "200": {"description": "Current product representation.", "headers": {"ETag": {"$ref": "#/components/headers/ETag"}, "X-Correlation-ID": {"$ref": "#/components/headers/CorrelationId"}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Product"}}}},
+          "304": {"description": "Not modified: the conditional GET matched the current version. No response body.", "headers": {"ETag": {"$ref": "#/components/headers/ETag"}, "X-Correlation-ID": {"$ref": "#/components/headers/CorrelationId"}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "500": {"$ref": "#/components/responses/InternalError"},
+          "default": {"$ref": "#/components/responses/UnexpectedError"}
+        }
+      },
+      "put": {
+        "operationId": "replaceProduct",
+        "tags": ["Products"],
+        "summary": "Replace a product using an optimistic version precondition",
+        "description": "Requires MERCHANT_ADMIN or MERCHANT_USER. Replaces all writable fields of an existing tenant-scoped product. One strong quoted version is required in If-Match. Atomic compare-and-swap permits at most one concurrent update for a version; every successful update increments version, including unchanged field values. Weak tags, wildcard, lists, zero, leading zeros and unquoted values are invalid. This is not an upsert.",
+        "parameters": [{"$ref": "#/components/parameters/IfMatch"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProductInput"}}}},
+        "responses": {
+          "200": {"description": "Product replaced; ETag identifies the new version.", "headers": {"ETag": {"$ref": "#/components/headers/ETag"}, "X-Correlation-ID": {"$ref": "#/components/headers/CorrelationId"}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Product"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "412": {"$ref": "#/components/responses/StaleVersion"},
+          "415": {"$ref": "#/components/responses/UnsupportedMediaType"},
+          "428": {"$ref": "#/components/responses/PreconditionRequired"},
+          "500": {"$ref": "#/components/responses/InternalError"},
+          "default": {"$ref": "#/components/responses/UnexpectedError"}
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {"bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT", "description": "OIDC JWT with validated issuer and audience odexa-api, UUID tenant_id and nonempty sub. Merchant roles are read from realm_access.roles."}},
+    "parameters": {
+      "CorrelationId": {"name": "X-Correlation-ID", "in": "header", "required": false, "schema": {"type": "string", "format": "uuid"}, "description": "Optional UUID correlation identifier. A UUID is generated when absent; invalid supplied values return 400."},
+      "IfMatch": {"name": "If-Match", "in": "header", "required": true, "schema": {"type": "string", "pattern": "^\"[1-9][0-9]{0,18}\"$", "examples": ["\"1\""]}, "description": "One strong quoted positive version, no greater than 9223372036854775807. Missing returns 428, malformed returns 400, stale returns 412."}
+    },
+    "headers": {
+      "ETag": {"description": "Strong ETag containing the quoted product version.", "schema": {"type": "string", "pattern": "^\"[1-9][0-9]{0,18}\"$", "examples": ["\"1\""]}},
+      "CorrelationId": {"description": "Request correlation UUID, generated if absent.", "schema": {"type": "string", "format": "uuid"}}
+    },
+    "schemas": {
+      "ProductInput": {
+        "type": "object",
+        "required": ["name", "description", "unitPriceMinor", "currency", "active"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1, "maxLength": 200, "pattern": "\\S", "description": "Nonblank product name."},
+          "description": {"type": "string", "maxLength": 2000},
+          "unitPriceMinor": {"type": "integer", "format": "int64", "minimum": 0, "maximum": 9223372036854775807},
+          "currency": {"type": "string", "enum": ["USD"]},
+          "active": {"type": "boolean"}
+        }
+      },
+      "Product": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "description", "unitPriceMinor", "currency", "active", "version"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "name": {"type": "string", "minLength": 1, "maxLength": 200},
+          "description": {"type": "string", "maxLength": 2000},
+          "unitPriceMinor": {"type": "integer", "format": "int64", "minimum": 0, "maximum": 9223372036854775807},
+          "currency": {"type": "string", "enum": ["USD"]},
+          "active": {"type": "boolean"},
+          "version": {"type": "integer", "format": "int64", "minimum": 1, "maximum": 9223372036854775807}
+        }
+      },
+      "ProductPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["items", "nextCursor"],
+        "properties": {
+          "items": {"type": "array", "maxItems": 100, "items": {"$ref": "#/components/schemas/Product"}},
+          "nextCursor": {"type": ["string", "null"], "minLength": 48, "maxLength": 48, "description": "Opaque cursor for the next page, or null when no further match was observed."}
+        }
+      },
+      "Problem": {
+        "type": "object",
+        "required": ["type", "title", "status", "detail", "code", "correlationId"],
+        "properties": {
+          "type": {"type": "string", "format": "uri", "description": "https://odexa.cc/problems/{lowercase-code}"},
+          "title": {"type": "string"},
+          "status": {"type": "integer", "minimum": 400, "maximum": 599},
+          "detail": {"type": "string", "description": "Sanitized client-safe explanation."},
+          "instance": {"type": "string", "format": "uri-reference"},
+          "code": {"type": "string"},
+          "correlationId": {"type": "string", "format": "uuid"}
+        }
+      }
+    },
+    "responses": {
+      "BadRequest": {"description": "400: invalid UUID, query, body, correlation ID or If-Match. Domain codes include INVALID_QUERY, INVALID_CURSOR and INVALID_ETAG.", "headers": {"X-Correlation-ID": {"$ref": "#/components/headers/CorrelationId"}}, "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
+      "Unauthorized": {"description": "401: missing, expired or invalid bearer token, issuer or audience.", "headers": {"WWW-Authenticate": {"schema": {"type": "string"}, "description": "Bearer authentication challenge."}, "X-Correlation-ID": {"$ref": "#/components/headers/CorrelationId"}}, "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
+      "Forbidden": {"description": "403: invalid/missing tenant or subject claim, or missing merchant role for a write.", "headers": {"X-Correlation-ID": {"$ref": "#/components/headers/CorrelationId"}}, "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
+      "NotFound": {"description": "404 PRODUCT_NOT_FOUND: unknown product or product belonging to another tenant.", "headers": {"X-Correlation-ID": {"$ref": "#/components/headers/CorrelationId"}}, "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
+      "StaleVersion": {"description": "412 STALE_VERSION: If-Match does not identify the current product version. Read the product again before retrying.", "headers": {"X-Correlation-ID": {"$ref": "#/components/headers/CorrelationId"}}, "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
+      "PreconditionRequired": {"description": "428 PRECONDITION_REQUIRED: If-Match is missing.", "headers": {"X-Correlation-ID": {"$ref": "#/components/headers/CorrelationId"}}, "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
+      "UnsupportedMediaType": {"description": "415: request content type must be application/json.", "headers": {"X-Correlation-ID": {"$ref": "#/components/headers/CorrelationId"}}, "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
+      "InternalError": {"description": "500: sanitized unexpected server error; database details are never exposed.", "headers": {"X-Correlation-ID": {"$ref": "#/components/headers/CorrelationId"}}, "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
+      "UnexpectedError": {"description": "Other sanitized HTTP error, with its actual status in the problem body.", "headers": {"X-Correlation-ID": {"$ref": "#/components/headers/CorrelationId"}}, "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}}
+    }
+  }
+}

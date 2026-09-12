@@ -1,0 +1,118 @@
+{
+  "openapi": "3.1.0",
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "info": {
+    "title": "Odexa Inventory API",
+    "version": "1.0.0",
+    "description": "Authenticated, tenant-scoped inventory. Tenant identity comes exclusively from a verified JWT tenant_id, never a request header. Reads allow authenticated actors; adjustments require MERCHANT_ADMIN or MERCHANT_USER. SUPPORT and PLATFORM_ADMIN have no bypass. Reservations are not public HTTP operations: order.created reserves stock atomically and emits inventory.reserved or inventory.rejected on commerce.events.v1 using the order UUID as key. payment.authorized commits a hold by reducing onHand and reserved; payment.declined releases only reserved. One inventory consumer group handles all three event types with a transactional inbox. Duplicate and conflicting terminal outcomes cannot apply twice. Unknown payment outcomes keep the hold; no automatic expiry is performed."
+  },
+  "servers": [
+    {"url": "http://localhost:8080", "description": "Local gateway"},
+    {"url": "http://localhost:8082", "description": "Direct inventory in native local development"}
+  ],
+  "security": [{"bearerAuth": []}],
+  "tags": [{"name": "Inventory"}],
+  "paths": {
+    "/api/v1/inventory/{productId}": {
+      "parameters": [
+        {"name": "productId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}, "description": "Product UUID, resolved only within the actor's tenant."},
+        {"$ref": "#/components/parameters/CorrelationId"}
+      ],
+      "get": {
+        "operationId": "getInventory",
+        "tags": ["Inventory"],
+        "summary": "Read inventory for a product in the actor's tenant",
+        "description": "available is always onHand minus reserved. A missing stock row and a row belonging to another tenant are indistinguishable (404).",
+        "parameters": [{"name": "If-None-Match", "in": "header", "schema": {"type": "string"}, "description": "Optional HTTP entity-tag condition; a matching current ETag returns 304 without a body."}],
+        "responses": {
+          "200": {"description": "Current tenant-scoped inventory.", "headers": {"ETag": {"$ref": "#/components/headers/ETag"}, "X-Correlation-ID": {"$ref": "#/components/headers/CorrelationId"}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Inventory"}}}},
+          "304": {"description": "Not modified: the conditional GET matched the current version. No response body.", "headers": {"ETag": {"$ref": "#/components/headers/ETag"}, "X-Correlation-ID": {"$ref": "#/components/headers/CorrelationId"}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "500": {"$ref": "#/components/responses/InternalError"},
+          "default": {"$ref": "#/components/responses/UnexpectedError"}
+        }
+      },
+      "put": {
+        "operationId": "adjustInventory",
+        "tags": ["Inventory"],
+        "summary": "Set on-hand stock using a merchant version precondition",
+        "description": "Requires MERCHANT_ADMIN or MERCHANT_USER. Adjusts an existing row only; this is not an upsert. Stock provisioning is outside this first-slice API (local fixtures provision two products). If-Match must be one strong quoted positive version; weak tags, wildcard and lists are rejected. The database locks the stock row, checks version and requires onHand >= reserved. A successful adjustment increments version even when onHand is unchanged. Concurrent reservations and settlements also increment version, so they invalidate stale merchant ETags. A stale precondition is checked before the reserved-stock floor.",
+        "parameters": [{"$ref": "#/components/parameters/IfMatch"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/InventoryInput"}}}},
+        "responses": {
+          "200": {"description": "Inventory adjusted; ETag contains the new version.", "headers": {"ETag": {"$ref": "#/components/headers/ETag"}, "X-Correlation-ID": {"$ref": "#/components/headers/CorrelationId"}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Inventory"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/ReservedStockConflict"},
+          "412": {"$ref": "#/components/responses/StaleVersion"},
+          "415": {"$ref": "#/components/responses/UnsupportedMediaType"},
+          "428": {"$ref": "#/components/responses/PreconditionRequired"},
+          "500": {"$ref": "#/components/responses/InternalError"},
+          "default": {"$ref": "#/components/responses/UnexpectedError"}
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {"bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT", "description": "OIDC JWT with validated issuer and audience odexa-api, UUID tenant_id and nonempty sub. Write roles are read from realm_access.roles."}},
+    "parameters": {
+      "CorrelationId": {"name": "X-Correlation-ID", "in": "header", "required": false, "schema": {"type": "string", "format": "uuid"}, "description": "Optional UUID correlation identifier. A UUID is generated when absent; invalid values return 400."},
+      "IfMatch": {"name": "If-Match", "in": "header", "required": true, "schema": {"type": "string", "pattern": "^\"[1-9][0-9]{0,18}\"$", "examples": ["\"1\""]}, "description": "One strong quoted positive version no greater than 9223372036854775807. Missing returns 428, malformed returns 400, stale returns 412."}
+    },
+    "headers": {
+      "ETag": {"description": "Strong ETag containing the quoted inventory version.", "schema": {"type": "string", "pattern": "^\"[1-9][0-9]{0,18}\"$", "examples": ["\"1\""]}},
+      "CorrelationId": {"description": "Request correlation UUID, generated if absent.", "schema": {"type": "string", "format": "uuid"}}
+    },
+    "schemas": {
+      "InventoryInput": {
+        "type": "object",
+        "required": ["onHand"],
+        "properties": {
+          "onHand": {"type": "integer", "format": "int64", "minimum": 0, "maximum": 9223372036854775807, "description": "Absolute physical stock count, not a delta. Must not be below the currently reserved quantity."}
+        }
+      },
+      "Inventory": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["productId", "onHand", "reserved", "available", "version"],
+        "properties": {
+          "productId": {"type": "string", "format": "uuid"},
+          "onHand": {"type": "integer", "format": "int64", "minimum": 0, "maximum": 9223372036854775807, "description": "Physical stock before subtracting active holds."},
+          "reserved": {"type": "integer", "format": "int64", "minimum": 0, "maximum": 9223372036854775807, "description": "Active held quantity; never exceeds onHand."},
+          "available": {"type": "integer", "format": "int64", "minimum": 0, "maximum": 9223372036854775807, "description": "onHand - reserved."},
+          "version": {"type": "integer", "format": "int64", "minimum": 1, "maximum": 9223372036854775807, "description": "Changes on each successful adjustment, reservation, commitment or release; duplicate events do not increment it."}
+        }
+      },
+      "Problem": {
+        "type": "object",
+        "required": ["type", "title", "status", "detail", "code", "correlationId"],
+        "properties": {
+          "type": {"type": "string", "format": "uri", "description": "https://odexa.cc/problems/{lowercase-code}"},
+          "title": {"type": "string"},
+          "status": {"type": "integer", "minimum": 400, "maximum": 599},
+          "detail": {"type": "string", "description": "Sanitized client-safe explanation."},
+          "instance": {"type": "string", "format": "uri-reference"},
+          "code": {"type": "string"},
+          "correlationId": {"type": "string", "format": "uuid"}
+        }
+      }
+    },
+    "responses": {
+      "BadRequest": {"description": "400: invalid UUID, body, correlation ID or If-Match. Domain codes include INVALID_ETAG and INVALID_STOCK.", "headers": {"X-Correlation-ID": {"$ref": "#/components/headers/CorrelationId"}}, "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
+      "Unauthorized": {"description": "401: missing, expired or invalid bearer token, issuer or audience.", "headers": {"WWW-Authenticate": {"schema": {"type": "string"}, "description": "Bearer authentication challenge."}, "X-Correlation-ID": {"$ref": "#/components/headers/CorrelationId"}}, "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
+      "Forbidden": {"description": "403: invalid/missing tenant or subject claim, or missing merchant role for an adjustment.", "headers": {"X-Correlation-ID": {"$ref": "#/components/headers/CorrelationId"}}, "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
+      "NotFound": {"description": "404 INVENTORY_NOT_FOUND: stock row absent or in another tenant.", "headers": {"X-Correlation-ID": {"$ref": "#/components/headers/CorrelationId"}}, "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
+      "ReservedStockConflict": {"description": "409 STOCK_RESERVED: requested onHand would be below the active reserved quantity. No mutation occurs.", "headers": {"X-Correlation-ID": {"$ref": "#/components/headers/CorrelationId"}}, "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
+      "StaleVersion": {"description": "412 STALE_VERSION: If-Match does not identify the current stock version. Read again before retrying.", "headers": {"X-Correlation-ID": {"$ref": "#/components/headers/CorrelationId"}}, "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
+      "PreconditionRequired": {"description": "428 PRECONDITION_REQUIRED: If-Match is missing.", "headers": {"X-Correlation-ID": {"$ref": "#/components/headers/CorrelationId"}}, "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
+      "UnsupportedMediaType": {"description": "415: request content type must be application/json.", "headers": {"X-Correlation-ID": {"$ref": "#/components/headers/CorrelationId"}}, "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
+      "InternalError": {"description": "500: sanitized unexpected server error; database details are never exposed.", "headers": {"X-Correlation-ID": {"$ref": "#/components/headers/CorrelationId"}}, "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
+      "UnexpectedError": {"description": "Other sanitized HTTP error, with its actual status in the problem body.", "headers": {"X-Correlation-ID": {"$ref": "#/components/headers/CorrelationId"}}, "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}}
+    }
+  }
+}

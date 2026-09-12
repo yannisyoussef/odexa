@@ -1,0 +1,162 @@
+{
+  "asyncapi": "3.0.0",
+  "id": "urn:odexa:commerce:events:v1",
+  "info": {
+    "title": "Odexa commerce integration events",
+    "version": "1.0.0",
+    "description": "Transactional-outbox events delivered at least once. Consumers deduplicate eventId within the same database transaction as their mutation. Every record key is the order UUID; ordering is only per Kafka partition, not a global causal guarantee across producer services. Unknown versions and malformed owned events are retried boundedly then published to commerce.events.v1.DLT with original transport metadata; that diagnostic channel intentionally accepts malformed input and is not a business contract. Payment transport uncertainty does not emit a decline: payment remains pending/review-required and inventory stays reserved. Payload paymentMethod is an opaque sandbox provider reference, never card data; do not log it."
+  },
+  "defaultContentType": "application/json",
+  "servers": {
+    "local": {"host": "kafka:9092", "protocol": "kafka", "description": "Private Compose network only; local single-node KRaft, not a production security configuration."}
+  },
+  "channels": {
+    "commerceEvents": {
+      "address": "commerce.events.v1",
+      "description": "Version-one commerce facts. Three partitions locally; event IDs remain unchanged on outbox retries.",
+      "servers": [{"$ref": "#/servers/local"}],
+      "messages": {
+        "orderCreated": {"$ref": "#/components/messages/OrderCreated"},
+        "inventoryReserved": {"$ref": "#/components/messages/InventoryReserved"},
+        "inventoryRejected": {"$ref": "#/components/messages/InventoryRejected"},
+        "paymentAuthorized": {"$ref": "#/components/messages/PaymentAuthorized"},
+        "paymentDeclined": {"$ref": "#/components/messages/PaymentDeclined"},
+        "orderConfirmed": {"$ref": "#/components/messages/OrderConfirmed"}
+      }
+    }
+  },
+  "operations": {
+    "publishCommerceFacts": {
+      "action": "send", "channel": {"$ref": "#/channels/commerceEvents"},
+      "summary": "Catalog-independent checkout choreography: order, inventory and payment each publish their own committed facts.",
+      "messages": [
+        {"$ref": "#/channels/commerceEvents/messages/orderCreated"},
+        {"$ref": "#/channels/commerceEvents/messages/inventoryReserved"},
+        {"$ref": "#/channels/commerceEvents/messages/inventoryRejected"},
+        {"$ref": "#/channels/commerceEvents/messages/paymentAuthorized"},
+        {"$ref": "#/channels/commerceEvents/messages/paymentDeclined"},
+        {"$ref": "#/channels/commerceEvents/messages/orderConfirmed"}
+      ]
+    },
+    "consumeCommerceFacts": {
+      "action": "receive", "channel": {"$ref": "#/channels/commerceEvents"},
+      "summary": "Independent consumer groups process owned event types and ignore known non-owned types.",
+      "messages": [
+        {"$ref": "#/channels/commerceEvents/messages/orderCreated"},
+        {"$ref": "#/channels/commerceEvents/messages/inventoryReserved"},
+        {"$ref": "#/channels/commerceEvents/messages/inventoryRejected"},
+        {"$ref": "#/channels/commerceEvents/messages/paymentAuthorized"},
+        {"$ref": "#/channels/commerceEvents/messages/paymentDeclined"}
+      ]
+    }
+  },
+  "components": {
+    "correlationIds": {
+      "request": {"description": "UUID propagated from X-Correlation-ID through HTTP and outbox records.", "location": "$message.payload#/correlationId"}
+    },
+    "messageTraits": {
+      "commerceFact": {
+        "contentType": "application/json",
+        "correlationId": {"$ref": "#/components/correlationIds/request"},
+        "bindings": {"kafka": {"key": {"type": "string", "format": "uuid", "description": "payload.orderId"}, "bindingVersion": "0.5.0"}}
+      }
+    },
+    "messages": {
+      "OrderCreated": {
+        "name": "order.created", "title": "Customer order accepted with authoritative price snapshot",
+        "traits": [{"$ref": "#/components/messageTraits/commerceFact"}],
+        "payload": {"allOf": [
+          {"$ref": "#/components/schemas/Envelope"},
+          {"type": "object", "properties": {"eventType": {"const": "order.created"}, "payload": {"$ref": "#/components/schemas/Checkout"}}}
+        ]}
+      },
+      "InventoryReserved": {
+        "name": "inventory.reserved", "title": "Stock reserved atomically for this order",
+        "traits": [{"$ref": "#/components/messageTraits/commerceFact"}],
+        "payload": {"allOf": [
+          {"$ref": "#/components/schemas/Envelope"},
+          {"type": "object", "properties": {"eventType": {"const": "inventory.reserved"}, "payload": {"$ref": "#/components/schemas/Checkout"}}}
+        ]}
+      },
+      "InventoryRejected": {
+        "name": "inventory.rejected", "title": "Order cannot reserve sufficient stock",
+        "traits": [{"$ref": "#/components/messageTraits/commerceFact"}],
+        "payload": {"allOf": [
+          {"$ref": "#/components/schemas/Envelope"},
+          {"type": "object", "properties": {"eventType": {"const": "inventory.rejected"}, "payload": {"$ref": "#/components/schemas/StockRejection"}}}
+        ]}
+      },
+      "PaymentAuthorized": {
+        "name": "payment.authorized", "title": "Provider authorization durably recorded",
+        "traits": [{"$ref": "#/components/messageTraits/commerceFact"}],
+        "payload": {"allOf": [
+          {"$ref": "#/components/schemas/Envelope"},
+          {"type": "object", "properties": {"eventType": {"const": "payment.authorized"}, "payload": {"$ref": "#/components/schemas/PaymentResult"}}}
+        ]}
+      },
+      "PaymentDeclined": {
+        "name": "payment.declined", "title": "Authoritative provider decline; reservation can be released",
+        "traits": [{"$ref": "#/components/messageTraits/commerceFact"}],
+        "payload": {"allOf": [
+          {"$ref": "#/components/schemas/Envelope"},
+          {"type": "object", "properties": {"eventType": {"const": "payment.declined"}, "payload": {"$ref": "#/components/schemas/PaymentResult"}}}
+        ]}
+      },
+      "OrderConfirmed": {
+        "name": "order.confirmed", "title": "Order confirmed following reserved stock and authorized payment",
+        "traits": [{"$ref": "#/components/messageTraits/commerceFact"}],
+        "payload": {"allOf": [
+          {"$ref": "#/components/schemas/Envelope"},
+          {"type": "object", "properties": {"eventType": {"const": "order.confirmed"}, "payload": {"$ref": "#/components/schemas/OrderReference"}}}
+        ]}
+      }
+    },
+    "schemas": {
+      "Envelope": {
+        "type": "object",
+        "required": ["eventId", "eventType", "eventVersion", "occurredAt", "correlationId", "tenantId", "payload"],
+        "properties": {
+          "eventId": {"type": "string", "format": "uuid"},
+          "eventType": {"type": "string"},
+          "eventVersion": {"type": "integer", "const": 1},
+          "occurredAt": {"type": "string", "format": "date-time", "description": "UTC instant"},
+          "correlationId": {"type": "string", "format": "uuid"},
+          "causationId": {"type": ["string", "null"], "format": "uuid", "description": "Trigger eventId; null or absent for an HTTP-originated event"},
+          "tenantId": {"type": "string", "format": "uuid"},
+          "payload": {"type": "object"}
+        },
+        "additionalProperties": false
+      },
+      "Checkout": {
+        "type": "object", "required": ["orderId", "customerId", "productId", "quantity", "totalMinor", "currency", "paymentMethod"],
+        "properties": {
+          "orderId": {"type": "string", "format": "uuid"},
+          "customerId": {"type": "string", "minLength": 1, "description": "OIDC subject, not a caller-provided customer ID"},
+          "productId": {"type": "string", "format": "uuid"},
+          "quantity": {"type": "integer", "minimum": 1, "maximum": 100},
+          "totalMinor": {"type": "integer", "minimum": 0},
+          "currency": {"type": "string", "const": "USD"},
+          "paymentMethod": {"type": "string", "enum": ["pm_approved", "pm_declined"]},
+          "reservationId": {"type": "string", "format": "uuid", "description": "Optional reservation identity, equal to orderId when present"}
+        },
+        "additionalProperties": false
+      },
+      "StockRejection": {
+        "type": "object", "required": ["orderId", "reason"],
+        "properties": {"orderId": {"type": "string", "format": "uuid"}, "reason": {"type": "string", "const": "INSUFFICIENT_STOCK"}},
+        "additionalProperties": false
+      },
+      "PaymentResult": {
+        "type": "object", "required": ["orderId", "paymentId"],
+        "properties": {
+          "orderId": {"type": "string", "format": "uuid"}, "paymentId": {"type": "string", "format": "uuid"}, "reason": {"type": "string"}
+        },
+        "additionalProperties": false
+      },
+      "OrderReference": {
+        "type": "object", "required": ["orderId"],
+        "properties": {"orderId": {"type": "string", "format": "uuid"}}, "additionalProperties": false
+      }
+    }
+  }
+}

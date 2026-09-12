@@ -1,0 +1,219 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Odexa public edge",
+    "version": "1.0.0",
+    "description": "Fixed-destination gateway. Request bodies and success responses reference the authoritative service HTTP contracts; the edge preserves their bodies/statuses, bearer authentication, ETags, If-Match, If-None-Match, Idempotency-Key and X-Correlation-ID. Only the listed methods and canonical UUID resource paths are forwarded; malformed UUID paths are rejected with 404 at the edge before reaching service validation. The downstream resource servers validate issuer, odexa-api audience, UUID tenant claim, role and ownership. Forwarded/X-Forwarded-* and caller-supplied hosts are not trusted or forwarded; deploy behind a trusted ingress without enabling forwarded-header interpretation. Local edge bucket is global per process (100 requests/s, burst 200), not a distributed quota. Requests are limited to 32768 bytes including chunked bodies; encoded bodies are rejected. Responses are limited to 2097152 bytes. Redirects are never followed, and Location is only exposed as a safe relative resource path. Extra edge-level responses applicable to every proxied operation are recorded in x-edge-responses below. No provider or administrative actuator route crosses the edge."
+  },
+  "servers": [{"url": "http://localhost:8080", "description": "Loopback-only local Compose edge"}],
+  "security": [{"bearerAuth": []}],
+  "paths": {
+    "/api/v1/products": {
+      "parameters": [{"$ref": "#/components/parameters/CorrelationId"}],
+      "get": {
+        "operationId": "edgeListProducts",
+        "parameters": [
+          {"$ref": "./catalog.json#/paths/~1api~1v1~1products/get/parameters/0"},
+          {"$ref": "./catalog.json#/paths/~1api~1v1~1products/get/parameters/1"},
+          {"$ref": "./catalog.json#/paths/~1api~1v1~1products/get/parameters/2"}
+        ],
+        "responses": {
+          "200": {"$ref": "./catalog.json#/paths/~1api~1v1~1products/get/responses/200"},
+          "400": {"$ref": "#/components/responses/Problem"}, "401": {"$ref": "#/components/responses/Problem"},
+          "403": {"$ref": "#/components/responses/Problem"}, "413": {"$ref": "#/components/responses/Problem"},
+          "415": {"$ref": "#/components/responses/Problem"}, "429": {"$ref": "#/components/responses/RateLimited"},
+          "502": {"$ref": "#/components/responses/Problem"}, "503": {"$ref": "#/components/responses/Problem"},
+          "504": {"$ref": "#/components/responses/Problem"}, "default": {"$ref": "#/components/responses/Problem"}
+        }
+      },
+      "post": {
+        "operationId": "edgeCreateProduct", "summary": "Create a product as a same-tenant merchant",
+        "requestBody": {"$ref": "./catalog.json#/paths/~1api~1v1~1products/post/requestBody"},
+        "responses": {
+          "201": {"$ref": "./catalog.json#/paths/~1api~1v1~1products/post/responses/201"},
+          "400": {"$ref": "#/components/responses/Problem"}, "401": {"$ref": "#/components/responses/Problem"},
+          "403": {"$ref": "#/components/responses/Problem"}, "413": {"$ref": "#/components/responses/Problem"},
+          "415": {"$ref": "#/components/responses/Problem"}, "429": {"$ref": "#/components/responses/RateLimited"},
+          "502": {"$ref": "#/components/responses/Problem"}, "503": {"$ref": "#/components/responses/Problem"},
+          "504": {"$ref": "#/components/responses/Problem"}, "default": {"$ref": "#/components/responses/Problem"}
+        }
+      }
+    },
+    "/api/v1/products/{id}": {
+      "parameters": [{"$ref": "#/components/parameters/Id"}, {"$ref": "#/components/parameters/CorrelationId"}],
+      "get": {
+        "operationId": "edgeGetProduct",
+        "responses": {
+          "200": {"$ref": "./catalog.json#/paths/~1api~1v1~1products~1{id}/get/responses/200"},
+          "400": {"$ref": "#/components/responses/Problem"}, "401": {"$ref": "#/components/responses/Problem"},
+          "403": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"},
+          "413": {"$ref": "#/components/responses/Problem"}, "415": {"$ref": "#/components/responses/Problem"},
+          "429": {"$ref": "#/components/responses/RateLimited"}, "502": {"$ref": "#/components/responses/Problem"},
+          "503": {"$ref": "#/components/responses/Problem"}, "504": {"$ref": "#/components/responses/Problem"},
+          "default": {"$ref": "#/components/responses/Problem"}
+        }
+      },
+      "put": {
+        "operationId": "edgeReplaceProduct", "summary": "Replace a product as a same-tenant merchant using a strong version ETag",
+        "parameters": [{"$ref": "./catalog.json#/components/parameters/IfMatch"}],
+        "requestBody": {"$ref": "./catalog.json#/paths/~1api~1v1~1products~1{id}/put/requestBody"},
+        "responses": {
+          "200": {"$ref": "./catalog.json#/paths/~1api~1v1~1products~1{id}/put/responses/200"},
+          "400": {"$ref": "#/components/responses/Problem"}, "401": {"$ref": "#/components/responses/Problem"},
+          "403": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"},
+          "412": {"$ref": "#/components/responses/Problem"}, "413": {"$ref": "#/components/responses/Problem"},
+          "415": {"$ref": "#/components/responses/Problem"}, "428": {"$ref": "#/components/responses/Problem"},
+          "429": {"$ref": "#/components/responses/RateLimited"}, "502": {"$ref": "#/components/responses/Problem"},
+          "503": {"$ref": "#/components/responses/Problem"}, "504": {"$ref": "#/components/responses/Problem"},
+          "default": {"$ref": "#/components/responses/Problem"}
+        }
+      }
+    },
+    "/api/v1/inventory/{productId}": {
+      "parameters": [
+        {"name": "productId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+        {"$ref": "#/components/parameters/CorrelationId"}
+      ],
+      "get": {
+        "operationId": "edgeGetInventory",
+        "responses": {
+          "200": {"$ref": "./inventory.json#/paths/~1api~1v1~1inventory~1{productId}/get/responses/200"},
+          "400": {"$ref": "#/components/responses/Problem"}, "401": {"$ref": "#/components/responses/Problem"},
+          "403": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"},
+          "413": {"$ref": "#/components/responses/Problem"}, "415": {"$ref": "#/components/responses/Problem"},
+          "429": {"$ref": "#/components/responses/RateLimited"}, "502": {"$ref": "#/components/responses/Problem"},
+          "503": {"$ref": "#/components/responses/Problem"}, "504": {"$ref": "#/components/responses/Problem"},
+          "default": {"$ref": "#/components/responses/Problem"}
+        }
+      },
+      "put": {
+        "operationId": "edgeAdjustInventory", "summary": "Adjust existing stock as a merchant using a strong version ETag",
+        "parameters": [{"$ref": "./inventory.json#/components/parameters/IfMatch"}],
+        "requestBody": {"$ref": "./inventory.json#/paths/~1api~1v1~1inventory~1{productId}/put/requestBody"},
+        "responses": {
+          "200": {"$ref": "./inventory.json#/paths/~1api~1v1~1inventory~1{productId}/put/responses/200"},
+          "400": {"$ref": "#/components/responses/Problem"}, "401": {"$ref": "#/components/responses/Problem"},
+          "403": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"},
+          "409": {"$ref": "#/components/responses/Problem"}, "412": {"$ref": "#/components/responses/Problem"},
+          "413": {"$ref": "#/components/responses/Problem"}, "415": {"$ref": "#/components/responses/Problem"},
+          "428": {"$ref": "#/components/responses/Problem"}, "429": {"$ref": "#/components/responses/RateLimited"},
+          "502": {"$ref": "#/components/responses/Problem"}, "503": {"$ref": "#/components/responses/Problem"},
+          "504": {"$ref": "#/components/responses/Problem"}, "default": {"$ref": "#/components/responses/Problem"}
+        }
+      }
+    },
+    "/api/v1/orders": {
+      "post": {
+        "operationId": "edgeCreateOrder", "summary": "Customer checkout with tenant/owner-scoped semantic idempotency",
+        "parameters": [
+          {"$ref": "#/components/parameters/CorrelationId"},
+          {"$ref": "./order.json#/paths/~1api~1v1~1orders/post/parameters/1"}
+        ],
+        "requestBody": {"$ref": "./order.json#/paths/~1api~1v1~1orders/post/requestBody"},
+        "responses": {
+          "200": {"$ref": "./order.json#/components/responses/ReplayedOrder"},
+          "201": {"$ref": "./order.json#/components/responses/CreatedOrder"},
+          "400": {"$ref": "#/components/responses/Problem"}, "401": {"$ref": "#/components/responses/Problem"},
+          "403": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"},
+          "409": {"$ref": "#/components/responses/Problem"}, "413": {"$ref": "#/components/responses/Problem"},
+          "415": {"$ref": "#/components/responses/Problem"}, "429": {"$ref": "#/components/responses/RateLimited"},
+          "502": {"$ref": "#/components/responses/Problem"}, "503": {"$ref": "#/components/responses/Problem"},
+          "504": {"$ref": "#/components/responses/Problem"}, "default": {"$ref": "#/components/responses/Problem"}
+        }
+      }
+    },
+    "/api/v1/orders/{id}": {
+      "parameters": [{"$ref": "#/components/parameters/Id"}, {"$ref": "#/components/parameters/CorrelationId"}],
+      "get": {
+        "operationId": "edgeGetOrder", "summary": "Read an order owned by the authenticated customer in this tenant",
+        "responses": {
+          "200": {"$ref": "./order.json#/paths/~1api~1v1~1orders~1{id}/get/responses/200"},
+          "400": {"$ref": "#/components/responses/Problem"}, "401": {"$ref": "#/components/responses/Problem"},
+          "403": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"},
+          "413": {"$ref": "#/components/responses/Problem"}, "415": {"$ref": "#/components/responses/Problem"},
+          "429": {"$ref": "#/components/responses/RateLimited"}, "502": {"$ref": "#/components/responses/Problem"},
+          "503": {"$ref": "#/components/responses/Problem"}, "504": {"$ref": "#/components/responses/Problem"},
+          "default": {"$ref": "#/components/responses/Problem"}
+        }
+      }
+    },
+    "/api/v1/payments/{orderId}": {
+      "parameters": [
+        {"name": "orderId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+        {"$ref": "#/components/parameters/CorrelationId"}
+      ],
+      "get": {
+        "operationId": "edgeGetPayment", "summary": "Read the customer's payment status; payment creation is internal only",
+        "responses": {
+          "200": {"$ref": "./payment.json#/paths/~1api~1v1~1payments~1{orderId}/get/responses/200"},
+          "400": {"$ref": "#/components/responses/Problem"}, "401": {"$ref": "#/components/responses/Problem"},
+          "403": {"$ref": "#/components/responses/Problem"}, "404": {"$ref": "#/components/responses/Problem"},
+          "413": {"$ref": "#/components/responses/Problem"}, "415": {"$ref": "#/components/responses/Problem"},
+          "429": {"$ref": "#/components/responses/RateLimited"}, "502": {"$ref": "#/components/responses/Problem"},
+          "503": {"$ref": "#/components/responses/Problem"}, "504": {"$ref": "#/components/responses/Problem"},
+          "default": {"$ref": "#/components/responses/Problem"}
+        }
+      }
+    },
+    "/actuator/health": {
+      "get": {"operationId": "edgeHealth", "security": [], "responses": {
+        "200": {"$ref": "#/components/responses/Health"}, "503": {"$ref": "#/components/responses/Health"}
+      }}
+    },
+    "/actuator/health/liveness": {
+      "get": {"operationId": "edgeLiveness", "security": [], "responses": {
+        "200": {"$ref": "#/components/responses/Health"}, "503": {"$ref": "#/components/responses/Health"}
+      }}
+    },
+    "/actuator/health/readiness": {
+      "get": {"operationId": "edgeReadiness", "security": [], "responses": {
+        "200": {"$ref": "#/components/responses/Health"}, "503": {"$ref": "#/components/responses/Health"}
+      }}
+    }
+  },
+  "x-edge-responses": {
+    "400": {"description": "Malformed request or non-UUID X-Correlation-ID", "$ref": "#/components/responses/Problem"},
+    "404": {"description": "Path/method not on the explicit route allowlist", "$ref": "#/components/responses/Problem"},
+    "413": {"description": "Request body exceeds 32768 bytes", "$ref": "#/components/responses/Problem"},
+    "415": {"description": "Content-Encoding is unsupported", "$ref": "#/components/responses/Problem"},
+    "429": {"description": "Global instance rate exceeded; Retry-After: 1", "$ref": "#/components/responses/Problem"},
+    "502": {"description": "Upstream unavailable or oversized response", "$ref": "#/components/responses/Problem"},
+    "503": {"description": "Request interrupted during gateway shutdown", "$ref": "#/components/responses/Problem"},
+    "504": {"description": "Upstream request timeout", "$ref": "#/components/responses/Problem"}
+  },
+  "components": {
+    "securitySchemes": {"bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}},
+    "parameters": {
+      "Id": {"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "CorrelationId": {"name": "X-Correlation-ID", "in": "header", "required": false, "schema": {"type": "string", "format": "uuid"}, "description": "Preserved UUID; generated when absent, rejected when malformed."}
+    },
+    "schemas": {
+      "Problem": {
+        "type": "object", "required": ["type", "title", "status", "code"],
+        "properties": {
+          "type": {"type": "string", "format": "uri"}, "title": {"type": "string"},
+          "status": {"type": "integer", "minimum": 400, "maximum": 599}, "code": {"type": "string"}
+        }
+      },
+      "Health": {
+        "type": "object", "required": ["status"], "properties": {"status": {"type": "string", "enum": ["UP", "DOWN", "OUT_OF_SERVICE", "UNKNOWN"]}}
+      }
+    },
+    "responses": {
+      "RateLimited": {
+        "description": "Global instance request bucket exhausted",
+        "headers": {"Retry-After": {"schema": {"type": "string", "const": "1"}}, "X-Correlation-ID": {"schema": {"type": "string", "format": "uuid"}}},
+        "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}
+      },
+      "Problem": {
+        "description": "Sanitized RFC 9457 problem, with a generated or preserved UUID correlation header.",
+        "headers": {"X-Correlation-ID": {"schema": {"type": "string", "format": "uuid"}}},
+        "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}
+      },
+      "Health": {
+        "description": "Health status only; no administrative details",
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Health"}}, "application/vnd.spring-boot.actuator.v3+json": {"schema": {"$ref": "#/components/schemas/Health"}}}
+      }
+    }
+  }
+}

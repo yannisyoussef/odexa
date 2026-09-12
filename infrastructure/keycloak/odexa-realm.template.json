@@ -1,0 +1,75 @@
+{
+  "realm": "odexa",
+  "enabled": true,
+  "displayName": "Odexa local development",
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "loginWithEmailAllowed": false,
+  "duplicateEmailsAllowed": false,
+  "bruteForceProtected": true,
+  "failureFactor": 10,
+  "accessTokenLifespan": 300,
+  "roles": {
+    "realm": [
+      {"name": "CUSTOMER"}, {"name": "MERCHANT_USER"}, {"name": "MERCHANT_ADMIN"},
+      {"name": "SUPPORT"}, {"name": "PLATFORM_ADMIN"}, {"name": "SERVICE_ACCOUNT"}
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "odexa-cli",
+      "name": "Local fixture CLI only — never enable direct grants in production",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": true,
+      "redirectUris": [],
+      "webOrigins": [],
+      "protocolMappers": [
+        {
+          "name": "tenant-id", "protocol": "openid-connect", "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {"user.attribute": "tenant_id", "claim.name": "tenant_id", "jsonType.label": "String", "access.token.claim": "true", "id.token.claim": "false", "userinfo.token.claim": "false"}
+        },
+        {
+          "name": "odexa-api-audience", "protocol": "openid-connect", "protocolMapper": "oidc-audience-mapper",
+          "config": {"included.custom.audience": "odexa-api", "access.token.claim": "true", "id.token.claim": "false"}
+        },
+        {
+          "name": "realm-roles", "protocol": "openid-connect", "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {"claim.name": "realm_access.roles", "jsonType.label": "String", "multivalued": "true", "access.token.claim": "true", "id.token.claim": "false", "userinfo.token.claim": "false"}
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "id": "cccccccc-cccc-4ccc-8ccc-ccccccccccc1", "username": "customer-a", "enabled": true,
+      "firstName": "Customer", "lastName": "A", "email": "customer-a@example.invalid", "emailVerified": true,
+      "attributes": {"tenant_id": ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]}, "realmRoles": ["CUSTOMER"],
+      "credentials": [{"type": "password", "value": "__LOCAL_FIXTURE_PASSWORD__", "temporary": false}]
+    },
+    {
+      "id": "cccccccc-cccc-4ccc-8ccc-ccccccccccc2", "username": "customer-b", "enabled": true,
+      "firstName": "Customer", "lastName": "B", "email": "customer-b@example.invalid", "emailVerified": true,
+      "attributes": {"tenant_id": ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]}, "realmRoles": ["CUSTOMER"],
+      "credentials": [{"type": "password", "value": "__LOCAL_FIXTURE_PASSWORD__", "temporary": false}]
+    },
+    {
+      "id": "cccccccc-cccc-4ccc-8ccc-ccccccccccc3", "username": "customer-other-a", "enabled": true,
+      "firstName": "Other customer", "lastName": "A", "email": "customer-other-a@example.invalid", "emailVerified": true,
+      "attributes": {"tenant_id": ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]}, "realmRoles": ["CUSTOMER"],
+      "credentials": [{"type": "password", "value": "__LOCAL_FIXTURE_PASSWORD__", "temporary": false}]
+    },
+    {
+      "id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "username": "merchant-a", "enabled": true,
+      "firstName": "Merchant", "lastName": "A", "email": "merchant-a@example.invalid", "emailVerified": true,
+      "attributes": {"tenant_id": ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]}, "realmRoles": ["MERCHANT_ADMIN"],
+      "credentials": [{"type": "password", "value": "__LOCAL_FIXTURE_PASSWORD__", "temporary": false}]
+    }
+  ]
+}
