@@ -1,0 +1,77 @@
+{
+  "openapi": "3.1.0",
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "info": {
+    "title": "Odexa Payment API",
+    "version": "1.0.0",
+    "description": "Read-only customer payment status. Payment creation is internal and occurs only after inventory.reserved. No public payment creation route. Provider transport failures remain PENDING until bounded retry exhaustion moves the payment to REVIEW_REQUIRED; stock remains held. Stripe and webhooks are deferred for this initial simulator-backed slice."
+  },
+  "servers": [{"url": "http://localhost:8084", "description": "Local service; deployed access is through the gateway"}],
+  "security": [{"bearerAuth": []}],
+  "tags": [{"name": "Payments"}],
+  "paths": {
+    "/api/v1/payments/{orderId}": {
+      "get": {
+        "operationId": "getPaymentByOrderId",
+        "tags": ["Payments"],
+        "summary": "Get the current customer's payment for an order",
+        "description": "JWT must have the configured issuer, odexa-api audience, a UUID tenant_id, and sub. Both tenant_id and sub must match the durable payment owner. No role grants an ownership or cross-tenant bypass. Cross-tenant, wrong-owner and unknown orders all return 404. A reservation not yet consumed also returns 404.",
+        "parameters": [
+          {"name": "orderId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+          {"name": "X-Correlation-ID", "in": "header", "required": false, "schema": {"type": "string", "format": "uuid"}, "description": "Optional UUID correlation ID. Runtime supplies a valid ID in the response."}
+        ],
+        "responses": {
+          "200": {
+            "description": "Current payment status",
+            "headers": {"X-Correlation-ID": {"schema": {"type": "string", "format": "uuid"}}},
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Payment"}}}
+          },
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "500": {"$ref": "#/components/responses/InternalError"}
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {"bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}},
+    "schemas": {
+      "Payment": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "orderId", "amountMinor", "currency", "status", "createdAt", "updatedAt"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid", "description": "Service-owned payment UUID"},
+          "orderId": {"type": "string", "format": "uuid"},
+          "amountMinor": {"type": "integer", "format": "int64", "minimum": 1, "maximum": 9223372036854775807},
+          "currency": {"type": "string", "const": "USD"},
+          "status": {"type": "string", "enum": ["PENDING", "AUTHORIZED", "DECLINED", "REVIEW_REQUIRED"], "description": "Only an authoritative provider decline yields DECLINED. REVIEW_REQUIRED is indeterminate and retains the stock reservation; no automatic release or further retry occurs."},
+          "createdAt": {"type": "string", "format": "date-time", "description": "UTC instant"},
+          "updatedAt": {"type": "string", "format": "date-time", "description": "UTC instant"}
+        }
+      },
+      "Problem": {
+        "type": "object",
+        "required": ["type", "title", "status", "detail"],
+        "properties": {
+          "type": {"type": "string", "format": "uri"},
+          "title": {"type": "string"},
+          "status": {"type": "integer", "minimum": 400, "maximum": 599},
+          "detail": {"type": "string"},
+          "instance": {"type": "string", "format": "uri-reference"},
+          "code": {"type": "string"},
+          "correlationId": {"type": "string", "format": "uuid"}
+        }
+      }
+    },
+    "responses": {
+      "BadRequest": {"description": "Malformed order UUID or request", "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
+      "Unauthorized": {"description": "Missing, invalid or expired bearer token", "headers": {"WWW-Authenticate": {"schema": {"type": "string"}}}, "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
+      "Forbidden": {"description": "Authenticated token lacks a valid tenant or subject", "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
+      "NotFound": {"description": "No payment visible to this tenant and owner", "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
+      "InternalError": {"description": "Sanitized internal failure", "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}}
+    }
+  }
+}
