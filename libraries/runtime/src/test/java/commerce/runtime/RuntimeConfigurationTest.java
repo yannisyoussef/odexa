@@ -34,8 +34,7 @@ class RuntimeConfigurationTest {
         assertThat(defaults.getProperty("spring.kafka.consumer.enable-auto-commit")).isEqualTo("false");
         assertThat(defaults.getProperty("spring.kafka.consumer.auto-offset-reset")).isEqualTo("earliest");
         assertThat(defaults.getProperty("spring.kafka.listener.ack-mode")).isEqualTo("record");
-        assertThat(defaults.getProperty("spring.sql.init.schema-locations"))
-                .isEqualTo("classpath:runtime-schema.sql,classpath:schema.sql");
+        assertThat(defaults.getProperty("spring.sql.init.mode")).isEqualTo("never");
         assertThat(defaults.getProperty("spring.kafka.admin.auto-create")).isEqualTo("${runtime.events.enabled:true}");
         assertThat(defaults.getProperty("spring.kafka.listener.auto-startup")).isEqualTo("${runtime.events.enabled:true}");
     }

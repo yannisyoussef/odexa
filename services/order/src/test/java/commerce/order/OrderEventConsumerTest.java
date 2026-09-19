@@ -25,7 +25,7 @@ class OrderEventConsumerTest {
     private final Inbox inbox = mock(Inbox.class);
     private final Outbox outbox = mock(Outbox.class);
     private final OrderRepository orders = mock(OrderRepository.class);
-    private final OrderEventConsumer consumer = new OrderEventConsumer(mapper, inbox, outbox, orders);
+    private final OrderEventConsumer consumer = new OrderEventConsumer(mapper, inbox, outbox, orders, java.time.Clock.systemUTC());
     private final Order order = OrderStateMachineTest.created();
     private final UUID reservationId = UUID.randomUUID();
 

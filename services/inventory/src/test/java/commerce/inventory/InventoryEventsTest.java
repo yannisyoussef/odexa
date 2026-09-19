@@ -62,7 +62,7 @@ class InventoryEventsTest {
 
     @Test
     void ignoresKnownNonOwnedEventsWithoutWritingInbox() {
-        for (String type : new String[]{"inventory.reserved", "inventory.rejected", "order.confirmed", "order.rejected"}) {
+        for (String type : new String[]{"inventory.reserved", "inventory.rejected", "order.confirmed", "order.rejected", "order.cancelled", "order.expired"}) {
             listener.onEvent(record(event(type, Map.of("orderId", orderId))));
         }
         verifyNoInteractions(inbox, reservations);

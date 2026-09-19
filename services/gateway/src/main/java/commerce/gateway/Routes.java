@@ -12,6 +12,9 @@ import org.springframework.stereotype.Component;
 final class Routes {
     private static final String ID = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
     private static final Pattern ITEM = Pattern.compile("/api/v1/(products|inventory|orders|payments)/" + ID);
+    private static final Pattern MERCHANT_ORDER = Pattern.compile("/api/v1/merchant/orders(?:/" + ID + "(?:/history)?)?");
+    private static final Pattern ORDER_HISTORY = Pattern.compile("/api/v1/orders/" + ID + "/history");
+    private static final Pattern ORDER_CANCEL = Pattern.compile("/api/v1/orders/" + ID + "/cancel");
     private static final Set<String> HEALTH = Set.of("/actuator/health", "/actuator/health/liveness", "/actuator/health/readiness");
     private final Map<String, URI> destinations;
 
@@ -41,9 +44,13 @@ final class Routes {
         if (path.equals("/api/v1/products") && Set.of("GET", "POST").contains(method)) {
             return destinations.get("products");
         }
-        if (path.equals("/api/v1/orders") && method.equals("POST")) {
+        if (path.equals("/api/v1/orders") && Set.of("GET", "POST").contains(method)) {
             return destinations.get("orders");
         }
+        if (method.equals("GET") && (MERCHANT_ORDER.matcher(path).matches() || ORDER_HISTORY.matcher(path).matches())) {
+            return destinations.get("orders");
+        }
+        if (method.equals("POST") && ORDER_CANCEL.matcher(path).matches()) return destinations.get("orders");
         var match = ITEM.matcher(path);
         if (!match.matches()) {
             return null;

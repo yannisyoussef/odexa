@@ -78,6 +78,23 @@ class GatewayTest {
     }
 
     @Test
+    void routesEveryNewOrderOperationAndRejectsUnlistedLifecycleCommands() throws Exception {
+        for (String path : List.of("/api/v1/orders", "/api/v1/orders/" + ID + "/history",
+                "/api/v1/merchant/orders", "/api/v1/merchant/orders/" + ID,
+                "/api/v1/merchant/orders/" + ID + "/history")) {
+            mvc.perform(get(path)).andExpect(status().isCreated());
+        }
+        mvc.perform(post("/api/v1/orders/" + ID + "/cancel")).andExpect(status().isCreated());
+        assertEquals(6, calls.get());
+        for (String path : List.of("/api/v1/orders/" + ID + "/refund", "/api/v1/merchant/orders/" + ID + "/cancel")) {
+            mvc.perform(post(path)).andExpect(status().isNotFound());
+        }
+        mvc.perform(post("/api/v1/merchant/orders")).andExpect(status().isNotFound());
+        mvc.perform(get("/api/v1/orders/" + ID + "/cancel")).andExpect(status().isNotFound());
+        assertEquals(6, calls.get());
+    }
+
+    @Test
     void rejectsAdministrativeAndUnlistedRoutesWithoutContactingBackend() throws Exception {
         for (String path : List.of("/actuator/env", "/actuator", "/api/v1/provider/payments", "/api/v1/products/garbage")) {
             mvc.perform(get(path)).andExpect(status().isNotFound());

@@ -12,7 +12,7 @@ import tools.jackson.databind.ObjectMapper;
 @Component
 public class ReservationConsumer {
     private static final Set<String> OTHER_TYPES = Set.of("order.created", "inventory.rejected",
-            "payment.authorized", "payment.declined", "order.confirmed", "order.rejected");
+            "payment.authorized", "payment.declined", "order.confirmed", "order.rejected", "order.cancelled", "order.expired");
     private final ObjectMapper mapper;
     private final Inbox inbox;
     private final PaymentStore store;

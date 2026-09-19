@@ -3,8 +3,8 @@
   "id": "urn:odexa:commerce:events:v1",
   "info": {
     "title": "Odexa commerce integration events",
-    "version": "1.0.0",
-    "description": "Transactional-outbox events delivered at least once. Consumers deduplicate eventId within the same database transaction as their mutation. Every record key is the order UUID; ordering is only per Kafka partition, not a global causal guarantee across producer services. Unknown versions and malformed owned events are retried boundedly then published to commerce.events.v1.DLT with original transport metadata; that diagnostic channel intentionally accepts malformed input and is not a business contract. Payment transport uncertainty does not emit a decline: payment remains pending/review-required and inventory stays reserved. Payload paymentMethod is an opaque sandbox provider reference, never card data; do not log it."
+    "version": "1.1.0",
+    "description": "Transactional-outbox events delivered at least once. Consumers deduplicate eventId within the same database transaction as their mutation. Every record key is the order UUID; ordering is only per Kafka partition, not a global causal guarantee across producer services. Unknown versions and malformed owned events are retried boundedly then published to commerce.events.v1.DLT with original transport metadata; that diagnostic channel intentionally accepts malformed input and is not a business contract. Payment transport uncertainty does not emit a decline: payment remains pending/review-required and inventory stays reserved. Payload paymentMethod is an opaque sandbox provider reference, never card data; do not log it. Order cancellation/expiry suppresses only never-attempted order.created dispatch, using a durable fence committed before sending. Lifecycle facts have v1 envelopes and stable outbox IDs. Upgrade all consumers and publishers together; old consumers reject newly defined types. order.rejected is now emitted for stock rejection or authoritative payment decline."
   },
   "defaultContentType": "application/json",
   "servers": {
@@ -21,7 +21,16 @@
         "inventoryRejected": {"$ref": "#/components/messages/InventoryRejected"},
         "paymentAuthorized": {"$ref": "#/components/messages/PaymentAuthorized"},
         "paymentDeclined": {"$ref": "#/components/messages/PaymentDeclined"},
-        "orderConfirmed": {"$ref": "#/components/messages/OrderConfirmed"}
+        "orderConfirmed": {"$ref": "#/components/messages/OrderConfirmed"},
+        "orderCancelled": {
+          "$ref": "#/components/messages/OrderCancelled"
+        },
+        "orderExpired": {
+          "$ref": "#/components/messages/OrderExpired"
+        },
+        "orderRejected": {
+          "$ref": "#/components/messages/OrderRejected"
+        }
       }
     }
   },
@@ -29,25 +38,12 @@
     "publishCommerceFacts": {
       "action": "send", "channel": {"$ref": "#/channels/commerceEvents"},
       "summary": "Catalog-independent checkout choreography: order, inventory and payment each publish their own committed facts.",
-      "messages": [
-        {"$ref": "#/channels/commerceEvents/messages/orderCreated"},
-        {"$ref": "#/channels/commerceEvents/messages/inventoryReserved"},
-        {"$ref": "#/channels/commerceEvents/messages/inventoryRejected"},
-        {"$ref": "#/channels/commerceEvents/messages/paymentAuthorized"},
-        {"$ref": "#/channels/commerceEvents/messages/paymentDeclined"},
-        {"$ref": "#/channels/commerceEvents/messages/orderConfirmed"}
-      ]
+      "messages": [{"$ref": "#/channels/commerceEvents/messages/orderCreated"}, {"$ref": "#/channels/commerceEvents/messages/inventoryReserved"}, {"$ref": "#/channels/commerceEvents/messages/inventoryRejected"}, {"$ref": "#/channels/commerceEvents/messages/paymentAuthorized"}, {"$ref": "#/channels/commerceEvents/messages/paymentDeclined"}, {"$ref": "#/channels/commerceEvents/messages/orderConfirmed"}, {"$ref": "#/channels/commerceEvents/messages/orderCancelled"}, {"$ref": "#/channels/commerceEvents/messages/orderExpired"}, {"$ref": "#/channels/commerceEvents/messages/orderRejected"}]
     },
     "consumeCommerceFacts": {
       "action": "receive", "channel": {"$ref": "#/channels/commerceEvents"},
       "summary": "Independent consumer groups process owned event types and ignore known non-owned types.",
-      "messages": [
-        {"$ref": "#/channels/commerceEvents/messages/orderCreated"},
-        {"$ref": "#/channels/commerceEvents/messages/inventoryReserved"},
-        {"$ref": "#/channels/commerceEvents/messages/inventoryRejected"},
-        {"$ref": "#/channels/commerceEvents/messages/paymentAuthorized"},
-        {"$ref": "#/channels/commerceEvents/messages/paymentDeclined"}
-      ]
+      "messages": [{"$ref": "#/channels/commerceEvents/messages/orderCreated"}, {"$ref": "#/channels/commerceEvents/messages/inventoryReserved"}, {"$ref": "#/channels/commerceEvents/messages/inventoryRejected"}, {"$ref": "#/channels/commerceEvents/messages/paymentAuthorized"}, {"$ref": "#/channels/commerceEvents/messages/paymentDeclined"}, {"$ref": "#/channels/commerceEvents/messages/orderConfirmed"}, {"$ref": "#/channels/commerceEvents/messages/orderCancelled"}, {"$ref": "#/channels/commerceEvents/messages/orderExpired"}, {"$ref": "#/channels/commerceEvents/messages/orderRejected"}]
     }
   },
   "components": {
@@ -109,6 +105,111 @@
           {"$ref": "#/components/schemas/Envelope"},
           {"type": "object", "properties": {"eventType": {"const": "order.confirmed"}, "payload": {"$ref": "#/components/schemas/OrderReference"}}}
         ]}
+      },
+      "OrderCancelled": {
+        "name": "order.cancelled",
+        "title": "Checkout cancelled before dispatch",
+        "traits": [
+          {
+            "$ref": "#/components/messageTraits/commerceFact"
+          }
+        ],
+        "payload": {
+          "allOf": [
+            {
+              "$ref": "#/components/schemas/Envelope"
+            },
+            {
+              "type": "object",
+              "required": [
+                "causationId"
+              ],
+              "properties": {
+                "eventType": {
+                  "const": "order.cancelled"
+                },
+                "causationId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "description": "Withdrawn checkout event ID for cancellation/expiry, inventory/payment event ID for rejection."
+                },
+                "payload": {
+                  "$ref": "#/components/schemas/OrderCancelledPayload"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "OrderExpired": {
+        "name": "order.expired",
+        "title": "Stale checkout expired before dispatch",
+        "traits": [
+          {
+            "$ref": "#/components/messageTraits/commerceFact"
+          }
+        ],
+        "payload": {
+          "allOf": [
+            {
+              "$ref": "#/components/schemas/Envelope"
+            },
+            {
+              "type": "object",
+              "required": [
+                "causationId"
+              ],
+              "properties": {
+                "eventType": {
+                  "const": "order.expired"
+                },
+                "causationId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "description": "Withdrawn checkout event ID for cancellation/expiry, inventory/payment event ID for rejection."
+                },
+                "payload": {
+                  "$ref": "#/components/schemas/OrderExpiredPayload"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "OrderRejected": {
+        "name": "order.rejected",
+        "title": "Order rejected after stock or payment decision",
+        "traits": [
+          {
+            "$ref": "#/components/messageTraits/commerceFact"
+          }
+        ],
+        "payload": {
+          "allOf": [
+            {
+              "$ref": "#/components/schemas/Envelope"
+            },
+            {
+              "type": "object",
+              "required": [
+                "causationId"
+              ],
+              "properties": {
+                "eventType": {
+                  "const": "order.rejected"
+                },
+                "causationId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "description": "Withdrawn checkout event ID for cancellation/expiry, inventory/payment event ID for rejection."
+                },
+                "payload": {
+                  "$ref": "#/components/schemas/OrderRejectedPayload"
+                }
+              }
+            }
+          ]
+        }
       }
     },
     "schemas": {
@@ -156,6 +257,67 @@
       "OrderReference": {
         "type": "object", "required": ["orderId"],
         "properties": {"orderId": {"type": "string", "format": "uuid"}}, "additionalProperties": false
+      },
+      "OrderCancelledPayload": {
+        "type": "object",
+        "required": [
+          "orderId",
+          "reason"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "orderId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "CUSTOMER_CANCELLED"
+            ]
+          }
+        }
+      },
+      "OrderExpiredPayload": {
+        "type": "object",
+        "required": [
+          "orderId",
+          "reason"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "orderId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "DISPATCH_EXPIRED"
+            ]
+          }
+        }
+      },
+      "OrderRejectedPayload": {
+        "type": "object",
+        "required": [
+          "orderId",
+          "reason"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "orderId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "INSUFFICIENT_STOCK",
+              "PAYMENT_DECLINED"
+            ]
+          }
+        }
       }
     }
   }

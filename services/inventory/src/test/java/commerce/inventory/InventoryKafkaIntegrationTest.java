@@ -33,9 +33,9 @@ import static org.junit.jupiter.api.Assertions.*;
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class InventoryKafkaIntegrationTest {
     @Container
-    static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:17-alpine");
+    static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:17.6-alpine");
     @Container
-    static final KafkaContainer KAFKA = new KafkaContainer("apache/kafka:4.1.0");
+    static final KafkaContainer KAFKA = new KafkaContainer("apache/kafka:4.1.1");
 
     @DynamicPropertySource
     static void infrastructure(DynamicPropertyRegistry properties) {

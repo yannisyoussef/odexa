@@ -16,7 +16,7 @@ class CheckoutServiceTest {
     private final OrderRepository orders = mock(OrderRepository.class);
     private final CheckoutWriter writer = mock(CheckoutWriter.class);
     private final CatalogClient catalog = mock(CatalogClient.class);
-    private final CheckoutService service = new CheckoutService(orders, writer, catalog);
+    private final CheckoutService service = new CheckoutService(orders, writer, catalog, java.time.Clock.systemUTC());
     private final Order order = OrderStateMachineTest.created();
     private final Actor actor = new Actor(order.tenantId(), order.customerId(), Set.of("CUSTOMER"));
     private final CheckoutRequest request = new CheckoutRequest(order.snapshot().productId(), 2, "pm_approved");

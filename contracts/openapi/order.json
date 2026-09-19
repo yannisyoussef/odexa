@@ -3,8 +3,8 @@
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "info": {
     "title": "Odexa Order API",
-    "version": "1.0.0",
-    "description": "Single-product asynchronous checkout. All operations require an issuer-validated bearer JWT with audience odexa-api, realm_access.roles containing CUSTOMER, a UUID tenant_id claim, and a nonempty subject. Tenant and customer identity come exclusively from the JWT, never request headers. Prices are snapshotted from the tenant-authorized catalog, not supplied by clients. No merchant, support, or platform-admin ownership bypass is provided."
+    "version": "1.1.0",
+    "description": "Single-product checkout, owned customer queries and explicit tenant merchant views. Bearer JWTs validate issuer and odexa-api audience. CUSTOMER operations always scope tenant_id and sub; merchant operations require MERCHANT_ADMIN or MERCHANT_USER and scope tenant_id. Tenant/owner filters cannot be supplied by clients. No support/platform bypass. Responses contain no customer subject or provider references."
   },
   "servers": [{"url": "/"}],
   "security": [{"bearerAuth": []}],
@@ -67,6 +67,105 @@
           },
           "default": {"$ref": "#/components/responses/UnexpectedError"}
         }
+      },
+      "get": {
+        "tags": [
+          "Orders"
+        ],
+        "operationId": "listOwnOrders",
+        "summary": "List the authenticated customer’s orders",
+        "description": "Requires CUSTOMER; scopes tenant and authenticated subject. Deterministic descending (createdAt, id) keyset order; default 20, maximum 100. Newly created later orders do not shift continuation pages. Status is a live filter; results are not a multi-request snapshot. Date range is inclusive lower/exclusive upper. Unknown or repeated parameters are rejected, including tenantId/customerId. Invalid input returns 400 with INVALID_ORDER_LIMIT, INVALID_ORDER_CURSOR, INVALID_ORDER_STATUS, INVALID_ORDER_TIMESTAMP, INVALID_ORDER_DATE_RANGE or INVALID_ORDER_FILTER.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "minLength": 39,
+              "maxLength": 39
+            },
+            "description": "Opaque versioned token returned as nextCursor. Keep filters unchanged when following it."
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "CREATED",
+                "PENDING_PAYMENT",
+                "CONFIRMED",
+                "STOCK_REJECTED",
+                "PAYMENT_FAILED",
+                "CANCELLED",
+                "EXPIRED"
+              ]
+            }
+          },
+          {
+            "name": "createdFrom",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "Inclusive creation timestamp, years 0001–9999."
+          },
+          {
+            "name": "createdBefore",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "Exclusive creation timestamp. Must be later than createdFrom."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List the authenticated customer’s orders",
+            "headers": {
+              "X-Correlation-ID": {
+                "$ref": "#/components/headers/CorrelationId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "default": {
+            "$ref": "#/components/responses/UnexpectedError"
+          },
+          "500": {
+            "$ref": "#/components/responses/UnexpectedError"
+          }
+        }
       }
     },
     "/api/v1/orders/{id}": {
@@ -96,11 +195,411 @@
           "default": {"$ref": "#/components/responses/UnexpectedError"}
         }
       }
+    },
+    "/api/v1/merchant/orders": {
+      "get": {
+        "tags": [
+          "Orders"
+        ],
+        "operationId": "listMerchantOrders",
+        "summary": "List orders within the merchant’s tenant",
+        "description": "Requires MERCHANT_ADMIN or MERCHANT_USER; includes all customers within this tenant. No identity/profile information is returned. Deterministic descending (createdAt, id) keyset order; default 20, maximum 100. Newly created later orders do not shift continuation pages. Status is a live filter; results are not a multi-request snapshot. Date range is inclusive lower/exclusive upper. Unknown or repeated parameters are rejected, including tenantId/customerId. Invalid input returns 400 with INVALID_ORDER_LIMIT, INVALID_ORDER_CURSOR, INVALID_ORDER_STATUS, INVALID_ORDER_TIMESTAMP, INVALID_ORDER_DATE_RANGE or INVALID_ORDER_FILTER.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "minLength": 39,
+              "maxLength": 39
+            },
+            "description": "Opaque versioned token returned as nextCursor. Keep filters unchanged when following it."
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "CREATED",
+                "PENDING_PAYMENT",
+                "CONFIRMED",
+                "STOCK_REJECTED",
+                "PAYMENT_FAILED",
+                "CANCELLED",
+                "EXPIRED"
+              ]
+            }
+          },
+          {
+            "name": "createdFrom",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "Inclusive creation timestamp, years 0001–9999."
+          },
+          {
+            "name": "createdBefore",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "Exclusive creation timestamp. Must be later than createdFrom."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List orders within the merchant’s tenant",
+            "headers": {
+              "X-Correlation-ID": {
+                "$ref": "#/components/headers/CorrelationId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "default": {
+            "$ref": "#/components/responses/UnexpectedError"
+          },
+          "500": {
+            "$ref": "#/components/responses/UnexpectedError"
+          }
+        }
+      }
+    },
+    "/api/v1/merchant/orders/{id}": {
+      "get": {
+        "tags": [
+          "Orders"
+        ],
+        "operationId": "getMerchantOrder",
+        "summary": "Inspect one order within the merchant’s tenant",
+        "description": "Requires MERCHANT_ADMIN or MERCHANT_USER. No customer ownership bypass is added to the customer path.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Inspect one order within the merchant’s tenant",
+            "headers": {
+              "X-Correlation-ID": {
+                "$ref": "#/components/headers/CorrelationId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Order"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "default": {
+            "$ref": "#/components/responses/UnexpectedError"
+          },
+          "500": {
+            "$ref": "#/components/responses/UnexpectedError"
+          },
+          "404": {
+            "description": "ORDER_NOT_FOUND: absent or outside the permitted tenant/owner scope.",
+            "headers": {
+              "X-Correlation-ID": {
+                "$ref": "#/components/headers/CorrelationId"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/orders/{id}/history": {
+      "get": {
+        "tags": [
+          "Orders"
+        ],
+        "operationId": "getOwnOrderHistory",
+        "summary": "Read order lifecycle history",
+        "description": "Requires CUSTOMER and same tenant plus subject. State and history commit atomically. Ordered by lifecycle version; duplicates do not add entries. Legacy orders have an explicit migration-time observation followed by new transitions.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Read order lifecycle history",
+            "headers": {
+              "X-Correlation-ID": {
+                "$ref": "#/components/headers/CorrelationId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderHistory"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "default": {
+            "$ref": "#/components/responses/UnexpectedError"
+          },
+          "500": {
+            "$ref": "#/components/responses/UnexpectedError"
+          },
+          "404": {
+            "description": "ORDER_NOT_FOUND: absent or outside the permitted tenant/owner scope.",
+            "headers": {
+              "X-Correlation-ID": {
+                "$ref": "#/components/headers/CorrelationId"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/merchant/orders/{id}/history": {
+      "get": {
+        "tags": [
+          "Orders"
+        ],
+        "operationId": "getMerchantOrderHistory",
+        "summary": "Read order lifecycle history",
+        "description": "Requires MERCHANT_ADMIN or MERCHANT_USER and same tenant. State and history commit atomically. Ordered by lifecycle version; duplicates do not add entries. Legacy orders have an explicit migration-time observation followed by new transitions.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Read order lifecycle history",
+            "headers": {
+              "X-Correlation-ID": {
+                "$ref": "#/components/headers/CorrelationId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderHistory"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "default": {
+            "$ref": "#/components/responses/UnexpectedError"
+          },
+          "500": {
+            "$ref": "#/components/responses/UnexpectedError"
+          },
+          "404": {
+            "description": "ORDER_NOT_FOUND: absent or outside the permitted tenant/owner scope.",
+            "headers": {
+              "X-Correlation-ID": {
+                "$ref": "#/components/headers/CorrelationId"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/orders/{id}/cancel": {
+      "post": {
+        "tags": [
+          "Orders"
+        ],
+        "operationId": "cancelOwnOrder",
+        "summary": "Cancel an owned checkout before dispatch begins",
+        "description": "Requires CUSTOMER and tenant/owner match. No body or query parameters. Synchronously commits CANCELLED only when CREATED, without deferred payment evidence, and the durable publication fence proves checkout has never been attempted. Dispatch races are serialized by database locks. Already CANCELLED returns 200 with the same resource, including after restart. All other states or attempted/uncertain publication return 409 ORDER_NOT_CANCELLABLE; no stock is released and no payment reversed. No If-Match or separate Idempotency-Key is required: the command has no mutable payload and checks eligibility atomically. The cancellation fact references the withdrawn checkout event; the checkout event is never delivered.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cancel an owned checkout before dispatch begins",
+            "headers": {
+              "X-Correlation-ID": {
+                "$ref": "#/components/headers/CorrelationId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Order"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "default": {
+            "$ref": "#/components/responses/UnexpectedError"
+          },
+          "500": {
+            "$ref": "#/components/responses/UnexpectedError"
+          },
+          "404": {
+            "description": "ORDER_NOT_FOUND: absent or outside the permitted tenant/owner scope.",
+            "headers": {
+              "X-Correlation-ID": {
+                "$ref": "#/components/headers/CorrelationId"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "ORDER_NOT_CANCELLABLE: checkout may already have escaped or the order has another terminal/in-flight state.",
+            "headers": {
+              "X-Correlation-ID": {
+                "$ref": "#/components/headers/CorrelationId"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
     "securitySchemes": {
-      "bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT", "description": "OIDC issuer-validated JWT, audience odexa-api, UUID tenant_id, nonempty sub, CUSTOMER in realm_access.roles."}
+      "bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT", "description": "OIDC issuer-validated JWT, audience odexa-api, UUID tenant_id, nonempty sub, and the realm_access.roles entry each operation requires: CUSTOMER for customer operations, MERCHANT_ADMIN or MERCHANT_USER for merchant operations."}
     },
     "parameters": {
       "CorrelationId": {"name": "X-Correlation-ID", "in": "header", "required": false, "description": "UUID correlation identifier; a new UUID is generated if absent. Propagated to catalog and events. Invalid non-UUID values are rejected.", "schema": {"type": "string", "format": "uuid"}}
@@ -129,7 +628,7 @@
           "quantity": {"type": "integer", "minimum": 1, "maximum": 100},
           "totalMinor": {"type": "integer", "format": "int64", "minimum": 1, "maximum": 9223372036854775807, "description": "Strictly positive immutable catalog unit price in minor units multiplied by quantity, with overflow checked. Zero-amount checkout is not supported."},
           "currency": {"type": "string", "const": "USD"},
-          "status": {"type": "string", "enum": ["CREATED", "PENDING_PAYMENT", "CONFIRMED", "STOCK_REJECTED", "PAYMENT_FAILED"], "description": "CREATED awaits a validated reservation/rejection. PENDING_PAYMENT has reserved stock. CONFIRMED, STOCK_REJECTED and PAYMENT_FAILED are terminal. A causally deferred payment result can produce CREATED to CONFIRMED/PAYMENT_FAILED in one database transaction through the internal PENDING_PAYMENT state."},
+          "status": {"type": "string", "enum": ["CREATED", "PENDING_PAYMENT", "CONFIRMED", "STOCK_REJECTED", "PAYMENT_FAILED", "CANCELLED", "EXPIRED"], "description": "CREATED awaits inventory and may already have payment in flight. PENDING_PAYMENT has reservation evidence. All other states are terminal. CANCELLED and EXPIRED apply only to never-dispatched checkout; uncertain payments never expire. Early payment evidence and its reservation may apply two transitions atomically, both recorded in history."},
           "version": {"type": "integer", "format": "int64", "minimum": 0, "maximum": 9223372036854775807, "description": "Starts at zero; increases once per domain state transition. Applying a deferred payment after its reservation increases by two. Duplicate or ignored late events do not increment it. Internal deferred evidence alone does not change the public version."},
           "createdAt": {"type": "string", "format": "date-time", "description": "Creation timestamp in UTC, normalized to database precision."}
         }
@@ -137,7 +636,7 @@
       "Problem": {
         "type": "object",
         "description": "Sanitized RFC 9457 problem detail. Business problem types are https://odexa.cc/problems/{lowercase-code}. Additional transport metadata may be present.",
-        "required": ["type", "title", "status"],
+        "required": ["type", "title", "status", "code"],
         "properties": {
           "type": {"type": "string", "format": "uri-reference"},
           "title": {"type": "string"},
@@ -146,6 +645,84 @@
           "instance": {"type": "string", "format": "uri-reference"},
           "code": {"type": "string"}
         }
+      },
+      "OrderPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items",
+          "nextCursor"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/Order"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Opaque next-page token, or null when no additional row matched at query time."
+          }
+        }
+      },
+      "OrderHistoryEntry": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "status",
+          "occurredAt",
+          "reason"
+        ],
+        "properties": {
+          "version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "CREATED",
+              "PENDING_PAYMENT",
+              "CONFIRMED",
+              "STOCK_REJECTED",
+              "PAYMENT_FAILED",
+              "CANCELLED",
+              "EXPIRED"
+            ]
+          },
+          "occurredAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "UTC local transition recording time; nondecreasing by version. LEGACY_SNAPSHOT time is migration observation time, not an inferred historic transition."
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "ORDER_CREATED",
+              "STOCK_RESERVED",
+              "INSUFFICIENT_STOCK",
+              "PAYMENT_AUTHORIZED",
+              "PAYMENT_DECLINED",
+              "CUSTOMER_CANCELLED",
+              "DISPATCH_EXPIRED",
+              "LEGACY_SNAPSHOT"
+            ]
+          }
+        }
+      },
+      "OrderHistory": {
+        "type": "array",
+        "maxItems": 4,
+        "items": {
+          "$ref": "#/components/schemas/OrderHistoryEntry"
+        },
+        "description": "Ascending version; bounded by the acyclic lifecycle. No Kafka metadata. Complete for new orders; old orders begin with a LEGACY_SNAPSHOT."
       }
     },
     "responses": {
@@ -160,7 +737,7 @@
         "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Order"}}}
       },
       "BadRequest": {
-        "description": "Malformed JSON/UUID, missing or invalid key, invalid correlation ID, or checkout validation error.",
+        "description": "Malformed input or a stable query validation code: INVALID_ORDER_LIMIT, INVALID_ORDER_CURSOR, INVALID_ORDER_STATUS, INVALID_ORDER_TIMESTAMP, INVALID_ORDER_DATE_RANGE, INVALID_ORDER_FILTER. Unknown/repeated query parameters are rejected on collections; cancellation accepts no parameters/body.",
         "headers": {"X-Correlation-ID": {"$ref": "#/components/headers/CorrelationId"}},
         "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}
       },
@@ -170,7 +747,7 @@
         "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}
       },
       "Forbidden": {
-        "description": "CUSTOMER role or valid tenant/customer claims are missing. Administrative roles confer no implicit access.",
+        "description": "Required operation role or valid tenant/subject claims are missing. Merchant views require MERCHANT_ADMIN or MERCHANT_USER; customer operations require CUSTOMER. No implicit support/platform access.",
         "headers": {"X-Correlation-ID": {"$ref": "#/components/headers/CorrelationId"}},
         "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}
       },

@@ -43,12 +43,13 @@ class OrderHttpTest {
     @Autowired CatalogClient catalog;
     @Autowired CheckoutWriter writer;
     @Autowired ObjectMapper mapper;
+    @Autowired commerce.runtime.Outbox outbox;
     private MockMvc mvc;
     private final Order order = OrderStateMachineTest.created();
 
     @BeforeEach
     void setup() {
-        reset(orders, catalog, writer);
+        reset(orders, catalog, writer, outbox);
         mvc = MockMvcBuilders.webAppContextSetup(context)
                 .addFilters(new CorrelationFilter(mapper)).apply(springSecurity()).build();
     }
@@ -115,6 +116,70 @@ class OrderHttpTest {
         verifyNoInteractions(catalog, writer);
     }
 
+    @Test
+    void queryAndHistoryOperationsRequireExplicitRolesAndHideForeignResources() throws Exception {
+        when(orders.list(eq(order.tenantId()), eq(order.customerId()), any())).thenReturn(List.of(order));
+        when(orders.list(eq(order.tenantId()), isNull(), any())).thenReturn(List.of(order));
+        when(orders.findOwned(order.tenantId(), order.customerId(), order.id())).thenReturn(Optional.of(order));
+        when(orders.findTenant(order.tenantId(), order.id())).thenReturn(Optional.of(order));
+        when(orders.history(order.id())).thenReturn(List.of(new OrderHistoryEntry(0, OrderStatus.CREATED, order.createdAt(), "ORDER_CREATED")));
+        mvc.perform(get("/api/v1/orders").with(customer())).andExpect(status().isOk())
+                .andExpect(jsonPath("$.items[0].id").value(order.id().toString()))
+                .andExpect(jsonPath("$.items[0].customerId").doesNotExist());
+        verify(orders).list(eq(order.tenantId()), eq(order.customerId()), any());
+        for (String role : List.of("MERCHANT_ADMIN", "MERCHANT_USER")) {
+            var merchant = actor(order.tenantId(), "merchant", role);
+            mvc.perform(get("/api/v1/merchant/orders").with(merchant)).andExpect(status().isOk())
+                    .andExpect(jsonPath("$.items[0].customerId").doesNotExist()).andExpect(jsonPath("$.items[0].paymentMethod").doesNotExist());
+            mvc.perform(get("/api/v1/merchant/orders/" + order.id()).with(merchant)).andExpect(status().isOk());
+            mvc.perform(get("/api/v1/merchant/orders/" + order.id() + "/history").with(merchant)).andExpect(status().isOk())
+                    .andExpect(jsonPath("$[0].reason").value("ORDER_CREATED"));
+            mvc.perform(get("/api/v1/orders").with(merchant)).andExpect(status().isForbidden());
+        }
+        for (String path : List.of("/api/v1/orders", "/api/v1/orders/" + order.id() + "/history",
+                "/api/v1/merchant/orders", "/api/v1/merchant/orders/" + order.id(), "/api/v1/merchant/orders/" + order.id() + "/history")) {
+            mvc.perform(get(path)).andExpect(status().isUnauthorized());
+        }
+        for (String path : List.of("/api/v1/merchant/orders", "/api/v1/merchant/orders/" + order.id(), "/api/v1/merchant/orders/" + order.id() + "/history")) {
+            mvc.perform(get(path).with(customer())).andExpect(status().isForbidden());
+        }
+        mvc.perform(get("/api/v1/orders/" + order.id() + "/history").with(actor(order.tenantId(), "other", "CUSTOMER")))
+                .andExpect(status().isNotFound());
+        mvc.perform(get("/api/v1/merchant/orders/" + order.id()).with(actor(UUID.randomUUID(), "merchant", "MERCHANT_ADMIN")))
+                .andExpect(status().isNotFound());
+        mvc.perform(get("/api/v1/merchant/orders/" + order.id() + "/history").with(actor(UUID.randomUUID(), "merchant", "MERCHANT_ADMIN")))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void invalidQueryReturnsCodedProblemsAndNoDatabaseQuery() throws Exception {
+        for (var entry : Map.of("limit", "0", "status", "UNKNOWN", "cursor", "invalid", "createdFrom", "bad", "customerId", "other").entrySet()) {
+            mvc.perform(get("/api/v1/orders").with(customer()).param(entry.getKey(), entry.getValue()))
+                    .andExpect(status().isBadRequest()).andExpect(content().contentTypeCompatibleWith("application/problem+json"))
+                    .andExpect(jsonPath("$.code").exists());
+        }
+        verifyNoInteractions(orders);
+    }
+
+    @Test
+    void cancellationHasNoPayloadRequiresOwnershipAndReturnsStableConflicts() throws Exception {
+        String path = "/api/v1/orders/" + order.id() + "/cancel";
+        mvc.perform(post(path)).andExpect(status().isUnauthorized());
+        mvc.perform(post(path).with(actor(order.tenantId(), "merchant", "MERCHANT_ADMIN"))).andExpect(status().isForbidden());
+        mvc.perform(post(path).with(customer()).contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"CANCELLED\"}"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(post(path).with(customer()).param("customerId", "other")).andExpect(status().isBadRequest());
+        when(orders.lockOwned(order.tenantId(), order.customerId(), order.id())).thenReturn(Optional.of(order));
+        mvc.perform(post(path).with(actor(order.tenantId(), "other", "CUSTOMER"))).andExpect(status().isNotFound());
+        mvc.perform(post(path).with(customer())).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("ORDER_NOT_CANCELLABLE"));
+        when(outbox.withdrawUnattempted("order.created", order.tenantId(), order.id().toString())).thenReturn(Optional.of(new commerce.runtime.Outbox.Withdrawn(UUID.randomUUID(), "checkout-correlation")));
+        mvc.perform(post(path).with(customer())).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("CANCELLED"));
+        when(orders.lockOwned(order.tenantId(), order.customerId(), order.id())).thenReturn(Optional.of(order.stopBeforeDispatch(OrderStatus.CANCELLED)));
+        clearInvocations(outbox);
+        mvc.perform(post(path).with(customer())).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("CANCELLED"));
+        verifyNoInteractions(outbox);
+    }
+
     private JwtRequestPostProcessor customer() {
         return actor(order.tenantId(), order.customerId(), "CUSTOMER");
     }
@@ -136,8 +201,15 @@ class OrderHttpTest {
         @Bean CatalogClient catalog() { return mock(CatalogClient.class); }
         @Bean CheckoutWriter writer() { return mock(CheckoutWriter.class); }
         @Bean CheckoutService service(OrderRepository orders, CheckoutWriter writer, CatalogClient catalog) {
-            return new CheckoutService(orders, writer, catalog);
+            return new CheckoutService(orders, writer, catalog, java.time.Clock.systemUTC());
         }
+        @Bean commerce.runtime.Outbox outbox() { return mock(commerce.runtime.Outbox.class); }
+        @Bean OrderQueries queries(OrderRepository orders) { return new OrderQueries(orders); }
+        @Bean OrderQueryController queryController(OrderQueries queries) { return new OrderQueryController(queries); }
+        @Bean OrderLifecycle lifecycle(OrderRepository orders, commerce.runtime.Outbox outbox) {
+            return new OrderLifecycle(orders, outbox, java.time.Clock.systemUTC(), java.time.Duration.ofMinutes(30));
+        }
+        @Bean OrderLifecycleController lifecycleController(OrderLifecycle lifecycle) { return new OrderLifecycleController(lifecycle); }
         @Bean OrderController controller(CheckoutService service) { return new OrderController(service); }
     }
 }

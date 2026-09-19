@@ -36,7 +36,7 @@ import static org.mockito.Mockito.*;
 @Testcontainers(disabledWithoutDocker = true)
 class InventoryPostgresIntegrationTest {
     @Container
-    static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:17-alpine");
+    static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:17.6-alpine");
     private final UUID tenant = UUID.randomUUID();
     private final UUID product = UUID.randomUUID();
     private final JsonMapper mapper = JsonMapper.builder().build();
@@ -48,8 +48,7 @@ class InventoryPostgresIntegrationTest {
     @BeforeEach
     void setup() {
         var dataSource = new DriverManagerDataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
-        new ResourceDatabasePopulator(new ClassPathResource("runtime-schema.sql"), new ClassPathResource("schema.sql"))
-                .execute(dataSource);
+        org.flywaydb.core.Flyway.configure().dataSource(dataSource).load().migrate();
         jdbc = new JdbcTemplate(dataSource);
         tx = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
         tx.setTimeout(15);

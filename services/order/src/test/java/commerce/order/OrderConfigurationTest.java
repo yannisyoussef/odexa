@@ -15,9 +15,8 @@ class OrderConfigurationTest {
         assertEquals("order", environment.getProperty("spring.application.name"));
         assertEquals("8083", environment.getProperty("server.port"));
         assertEquals("order-v1", environment.getProperty("spring.kafka.consumer.group-id"));
-        assertEquals("always", environment.getProperty("spring.sql.init.mode"));
-        assertEquals("classpath:runtime-schema.sql,classpath:schema.sql",
-                environment.getProperty("spring.sql.init.schema-locations"));
+        assertEquals("never", environment.getProperty("spring.sql.init.mode"));
+        assertEquals("false", environment.getProperty("spring.flyway.baseline-on-migrate"));
         assertEquals("http://localhost:8081", environment.getProperty("order.catalog.url"));
         assertEquals("2s", environment.getProperty("order.catalog.connect-timeout"));
         assertEquals("3s", environment.getProperty("order.catalog.read-timeout"));

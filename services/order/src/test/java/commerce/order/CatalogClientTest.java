@@ -47,7 +47,7 @@ class CatalogClientTest {
     void zeroAmountCheckoutIs422BeforePersistenceEvenOnRetry() {
         OrderRepository orders = mock(OrderRepository.class);
         Outbox outbox = mock(Outbox.class);
-        CheckoutService service = new CheckoutService(orders, new CheckoutWriter(orders, outbox), catalog);
+        CheckoutService service = new CheckoutService(orders, new CheckoutWriter(orders, outbox), catalog, java.time.Clock.systemUTC());
         Actor actor = new Actor(UUID.randomUUID(), "customer-a", Set.of("CUSTOMER"));
         when(orders.findByKey(actor.tenantId(), actor.subject(), "free-checkout")).thenReturn(Optional.empty());
 

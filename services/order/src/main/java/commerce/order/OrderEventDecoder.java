@@ -7,7 +7,7 @@ import tools.jackson.databind.JsonNode;
 
 /** Reject malformed/unknown events so the runtime's bounded retry and DLT policy can recover them. */
 final class OrderEventDecoder {
-    private static final Set<String> IGNORED = Set.of("order.created", "order.confirmed", "order.rejected");
+    private static final Set<String> IGNORED = Set.of("order.created", "order.confirmed", "order.rejected", "order.cancelled", "order.expired");
 
     private OrderEventDecoder() { }
 

@@ -23,7 +23,8 @@ public record Order(UUID id, UUID tenantId, String customerId, CheckoutSnapshot 
                 || status == OrderStatus.PAYMENT_FAILED) && reservationEventId == null) {
             throw new IllegalArgumentException("Reservation evidence required");
         }
-        if ((status == OrderStatus.CREATED || status == OrderStatus.STOCK_REJECTED)
+        if ((status == OrderStatus.CREATED || status == OrderStatus.STOCK_REJECTED
+                || status == OrderStatus.CANCELLED || status == OrderStatus.EXPIRED)
                 && reservationEventId != null) {
             throw new IllegalArgumentException("Unexpected reservation evidence");
         }
@@ -64,7 +65,7 @@ public record Order(UUID id, UUID tenantId, String customerId, CheckoutSnapshot 
                         version + 1, createdAt, null, null);
             }
             case PENDING_PAYMENT -> throw conflict("Reserved stock cannot be rejected");
-            case CONFIRMED, STOCK_REJECTED, PAYMENT_FAILED -> this;
+            case CONFIRMED, STOCK_REJECTED, PAYMENT_FAILED, CANCELLED, EXPIRED -> this;
         };
     }
 
@@ -93,8 +94,17 @@ public record Order(UUID id, UUID tenantId, String customerId, CheckoutSnapshot 
                         version + 1, createdAt, reservationEventId, null);
             }
             // First terminal outcome wins; duplicates and contradictory late outcomes are inert.
-            case CONFIRMED, STOCK_REJECTED, PAYMENT_FAILED -> this;
+            case CONFIRMED, STOCK_REJECTED, PAYMENT_FAILED, CANCELLED, EXPIRED -> this;
         };
+    }
+
+    /** Caller must also withdraw the never-attempted checkout event in this transaction. */
+    public Order stopBeforeDispatch(OrderStatus target) {
+        if ((target != OrderStatus.CANCELLED && target != OrderStatus.EXPIRED)
+                || status != OrderStatus.CREATED || deferredPayment != null) {
+            throw new ApiException(409, "ORDER_NOT_CANCELLABLE", "Order can no longer be cancelled");
+        }
+        return new Order(id, tenantId, customerId, snapshot, target, version + 1, createdAt, null, null);
     }
 
     private static ApiException conflict(String message) {

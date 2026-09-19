@@ -37,7 +37,7 @@ import tools.jackson.databind.ObjectMapper;
         "runtime.events.retry-attempts=1"})
 @AutoConfigureMockMvc
 class PaymentKafkaSecurityIntegrationTest {
-    @Container static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:17.6");
+    @Container static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:17.6-alpine");
     @Container static final KafkaContainer KAFKA = new KafkaContainer("apache/kafka-native:4.1.0");
     private static final String PROVIDER_KEY = UUID.randomUUID().toString();
     @Autowired KafkaTemplate<String, String> kafka;

@@ -13,7 +13,7 @@ Internal payment orchestration for Odexa. Default HTTP port **8084**; only `GET 
 
 ## Configuration
 
-Required environment: `DB_PASSWORD`, `PROVIDER_API_KEY` (same secret as simulator; never log it). `DB_URL` defaults to `jdbc:postgresql://localhost:5432/payment`, `DB_USER` to `payment`; `SIMULATOR_URL` defaults to `http://localhost:8085`. Runtime also consumes `KAFKA_BOOTSTRAP_SERVERS`, `OIDC_ISSUER`, `OIDC_JWKS`; `SERVER_PORT` overrides the port. Service-specific defaults are imported *after* runtime defaults so generic runtime defaults cannot replace the service database/port. SQL init loads runtime schema then this service's initial immutable schema. No production migration mechanism is implied.
+Required environment: `DB_PASSWORD`, `PROVIDER_API_KEY` (same secret as simulator; never log it). `DB_URL` defaults to `jdbc:postgresql://localhost:5432/payment`, `DB_USER` to `payment`; `SIMULATOR_URL` defaults to `http://localhost:8085`. Runtime also consumes `KAFKA_BOOTSTRAP_SERVERS`, `OIDC_ISSUER`, `OIDC_JWKS`; `SERVER_PORT` overrides the port. Service-specific defaults are imported *after* runtime defaults so generic runtime defaults cannot replace the service database/port. Flyway applies this service's versioned migrations at startup; see the [migration procedure](../../docs/database-migrations.md).
 
 Worker controls: `PAYMENT_WORKER_ENABLED`, `PAYMENT_POLL_MS`, `PAYMENT_MAX_ATTEMPTS` (1–20), `PAYMENT_LEASE_SECONDS` (10–600), `PAYMENT_BACKOFF_SECONDS` (positive), `PAYMENT_MAX_BACKOFF_SECONDS` (base–3600). Production transport requires trusted routing/TLS outside this local slice.
 

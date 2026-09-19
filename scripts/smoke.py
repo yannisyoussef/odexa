@@ -24,7 +24,7 @@ from contract_check import ContractError, validate_response
 
 ROOT = Path(__file__).resolve().parents[1]
 PRODUCT = "11111111-1111-4111-8111-111111111111"
-TERMINAL = {"CONFIRMED", "STOCK_REJECTED", "PAYMENT_FAILED"}
+TERMINAL = {"CONFIRMED", "STOCK_REJECTED", "PAYMENT_FAILED", "CANCELLED", "EXPIRED"}
 
 
 class SmokeFailure(Exception):
@@ -220,6 +220,53 @@ def run():
     require(outcomes.count("CONFIRMED") == 5 and outcomes.count("STOCK_REJECTED") == 3, "Concurrent checkout oversold or lost available stock")
     client.wait_inventory(merchant, 0, 0)
     print("PASS concurrent reservations cannot oversell (5 units, 8 competing orders)")
+    own = client.call("order", "GET", "/api/v1/orders?limit=2", customer).body
+    require(len(own["items"]) == 2 and own["nextCursor"], "Order collection did not produce a bounded continuation")
+    next_page = client.call("order", "GET", "/api/v1/orders?limit=2&cursor=" + own["nextCursor"], customer).body
+    require(next_page["items"] and not ({item["id"] for item in own["items"]} & {item["id"] for item in next_page["items"]}),
+            "Order continuation was empty or repeated an item")
+    confirmed_only = client.call("order", "GET", "/api/v1/orders?status=CONFIRMED&limit=100", customer).body["items"]
+    require(order_id in {item["id"] for item in confirmed_only} and all(item["status"] == "CONFIRMED" for item in confirmed_only),
+            "Order status filter was ignored")
+    merchant_page = client.call("order", "GET", "/api/v1/merchant/orders?limit=100", merchant).body
+    require(order_id in {item["id"] for item in merchant_page["items"]}, "Merchant cannot see a tenant order")
+    detail = client.call("order", "GET", f"/api/v1/merchant/orders/{order_id}", merchant).body
+    require(detail == confirmed and not {"customerId", "tenantId", "paymentMethod"} & detail.keys(), "Merchant representation exposes identity or differs from public order")
+    history = client.call("order", "GET", f"/api/v1/orders/{order_id}/history", customer).body
+    require([entry["status"] for entry in history] == ["CREATED", "PENDING_PAYMENT", "CONFIRMED"], "Successful lifecycle history is incomplete")
+    require(client.call("order", "GET", f"/api/v1/merchant/orders/{order_id}/history", merchant).body == history, "Merchant history differs")
+    for username in ("customer-b", "customer-other-a"):
+        page = client.call("order", "GET", "/api/v1/orders?limit=100", tokens[username]).body
+        require(order_id not in {item["id"] for item in page["items"]}, "Customer collection leaked an order")
+        client.call("order", "GET", f"/api/v1/orders/{order_id}/history", tokens[username], expected=(404,))
+        client.call("order", "POST", f"/api/v1/orders/{order_id}/cancel", tokens[username], expected=(404,))
+    client.call("order", "GET", "/api/v1/merchant/orders", customer, expected=(403,))
+    client.call("order", "GET", "/api/v1/orders", merchant, expected=(403,))
+    for query, code in (("limit=101", "INVALID_ORDER_LIMIT"), ("cursor=bad", "INVALID_ORDER_CURSOR"),
+                        ("status=unknown", "INVALID_ORDER_STATUS"), ("customerId=other", "INVALID_ORDER_FILTER"),
+                        ("createdFrom=bad", "INVALID_ORDER_TIMESTAMP")):
+        failure = client.call("order", "GET", "/api/v1/orders?" + query, customer, expected=(400,))
+        require(failure.body["code"] == code, "Query failure code changed")
+    conflict = client.call("order", "POST", f"/api/v1/orders/{order_id}/cancel", customer, expected=(409,))
+    require(conflict.body["code"] == "ORDER_NOT_CANCELLABLE", "Paid cancellation did not fail safely")
+    for failed, reason in ((rejected, "INSUFFICIENT_STOCK"), (declined, "PAYMENT_DECLINED")):
+        entries = client.call("order", "GET", f"/api/v1/orders/{failed.body['id']}/history", customer).body
+        require(entries[-1]["reason"] == reason, "Failure history reason is missing")
+    print("PASS owned and merchant queries, pagination, lifecycle history, privacy and coded validation")
+    cancellable = client.call("order", "POST", "/api/v1/orders", customer, payload,
+                              {"Idempotency-Key": str(uuid4())}, expected=(201,)).body["id"]
+    cancellation = client.call("order", "POST", f"/api/v1/orders/{cancellable}/cancel", customer, expected=(200, 409))
+    if cancellation.status == 200:
+        retry = client.call("order", "POST", f"/api/v1/orders/{cancellable}/cancel", customer)
+        require(retry.body == cancellation.body and retry.body["status"] == "CANCELLED", "Cancellation retry changed outcome")
+        entries = client.call("order", "GET", f"/api/v1/orders/{cancellable}/history", customer).body
+        require([entry["status"] for entry in entries] == ["CREATED", "CANCELLED"], "Cancellation history is incorrect")
+    else:
+        require(cancellation.body["code"] == "ORDER_NOT_CANCELLABLE", "Dispatch race returned an unexpected conflict")
+        client.wait_order(cancellable, customer, "STOCK_REJECTED")
+    client.wait_inventory(merchant, 0, 0)
+    outcome = "retry-safe success" if cancellation.status == 200 else "safe dispatch conflict"
+    print(f"PASS cancellation through gateway: {outcome}; stock unchanged")
     client.call("gateway", "GET", "/actuator/env", expected=(404,), contract=False)
     print("PASS edge denies administrative actuator routes")
     print("PASS local smoke and REST response-shape subset checks; not official schema validation. Local fixture stock was consumed.")
