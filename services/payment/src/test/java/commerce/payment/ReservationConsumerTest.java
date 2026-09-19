@@ -27,7 +27,9 @@ class ReservationConsumerTest {
     }
 
     @Test void knownUnownedEventsAreIgnored() {
-        consumer.receive(mapper.writeValueAsString(event("payment.authorized", Map.of("orderId", UUID.randomUUID()))));
+        for (String type : new String[] {"payment.authorized", "order.cancelled", "order.expired", "order.rejected"}) {
+            consumer.receive(mapper.writeValueAsString(event(type, Map.of("orderId", UUID.randomUUID()))));
+        }
         verifyNoInteractions(inbox, store);
     }
 

@@ -3,7 +3,7 @@ package commerce.order;
 import commerce.runtime.Actor;
 import commerce.runtime.ApiException;
 import commerce.runtime.Correlation;
-import java.time.Instant;
+import java.time.Clock;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
@@ -15,11 +15,13 @@ public class CheckoutService {
     private final OrderRepository orders;
     private final CheckoutWriter writer;
     private final CatalogClient catalog;
+    private final Clock clock;
 
-    public CheckoutService(OrderRepository orders, CheckoutWriter writer, CatalogClient catalog) {
+    public CheckoutService(OrderRepository orders, CheckoutWriter writer, CatalogClient catalog, Clock clock) {
         this.orders = orders;
         this.writer = writer;
         this.catalog = catalog;
+        this.clock = clock;
     }
 
     /** The downstream call is deliberately outside the writer's database transaction. */
@@ -46,7 +48,7 @@ public class CheckoutService {
             }
             throw failure;
         }
-        Order candidate = Order.create(UUID.randomUUID(), actor.tenantId(), actor.subject(), snapshot, Instant.now());
+        Order candidate = Order.create(UUID.randomUUID(), actor.tenantId(), actor.subject(), snapshot, clock.instant());
         return writer.create(candidate, key, fingerprint);
     }
 
@@ -56,7 +58,7 @@ public class CheckoutService {
                 .orElseThrow(() -> new ApiException(404, "ORDER_NOT_FOUND", "Order not found"));
     }
 
-    private static void authorize(Actor actor) {
+    static void authorize(Actor actor) {
         actor.requireRole("CUSTOMER");
         if (actor.subject() == null || actor.subject().isBlank() || actor.subject().length() > 255) {
             throw new ApiException(403, "INVALID_CUSTOMER", "A customer identity is required");

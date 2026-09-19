@@ -17,7 +17,7 @@ import tools.jackson.databind.ObjectMapper;
 public class InventoryEvents {
     static final String CONSUMER = "odexa-inventory-v1";
     private static final Set<String> OTHER_EVENTS = Set.of(
-            "inventory.reserved", "inventory.rejected", "order.confirmed", "order.rejected");
+            "inventory.reserved", "inventory.rejected", "order.confirmed", "order.rejected", "order.cancelled", "order.expired");
     private final ObjectMapper mapper;
     private final Inbox inbox;
     private final ReservationService reservations;

@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Odexa public edge",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "description": "Fixed-destination gateway. Request bodies and success responses reference the authoritative service HTTP contracts; the edge preserves their bodies/statuses, bearer authentication, ETags, If-Match, If-None-Match, Idempotency-Key and X-Correlation-ID. Only the listed methods and canonical UUID resource paths are forwarded; malformed UUID paths are rejected with 404 at the edge before reaching service validation. The downstream resource servers validate issuer, odexa-api audience, UUID tenant claim, role and ownership. Forwarded/X-Forwarded-* and caller-supplied hosts are not trusted or forwarded; deploy behind a trusted ingress without enabling forwarded-header interpretation. Local edge bucket is global per process (100 requests/s, burst 200), not a distributed quota. Requests are limited to 32768 bytes including chunked bodies; encoded bodies are rejected. Responses are limited to 2097152 bytes. Redirects are never followed, and Location is only exposed as a safe relative resource path. Extra edge-level responses applicable to every proxied operation are recorded in x-edge-responses below. No provider or administrative actuator route crosses the edge."
   },
   "servers": [{"url": "http://localhost:8080", "description": "Loopback-only local Compose edge"}],
@@ -120,6 +120,102 @@
           "502": {"$ref": "#/components/responses/Problem"}, "503": {"$ref": "#/components/responses/Problem"},
           "504": {"$ref": "#/components/responses/Problem"}, "default": {"$ref": "#/components/responses/Problem"}
         }
+      },
+      "get": {
+        "tags": [
+          "Orders"
+        ],
+        "operationId": "edgeListOwnOrders",
+        "summary": "List the authenticated customer’s orders",
+        "description": "Requires CUSTOMER; scopes tenant and authenticated subject. Deterministic descending (createdAt, id) keyset order; default 20, maximum 100. Newly created later orders do not shift continuation pages. Status is a live filter; results are not a multi-request snapshot. Date range is inclusive lower/exclusive upper. Unknown or repeated parameters are rejected, including tenantId/customerId. Invalid input returns 400 with INVALID_ORDER_LIMIT, INVALID_ORDER_CURSOR, INVALID_ORDER_STATUS, INVALID_ORDER_TIMESTAMP, INVALID_ORDER_DATE_RANGE or INVALID_ORDER_FILTER.",
+        "parameters": [
+          {
+            "$ref": "./order.json#/components/parameters/CorrelationId"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "minLength": 39,
+              "maxLength": 39
+            },
+            "description": "Opaque versioned token returned as nextCursor. Keep filters unchanged when following it."
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "CREATED",
+                "PENDING_PAYMENT",
+                "CONFIRMED",
+                "STOCK_REJECTED",
+                "PAYMENT_FAILED",
+                "CANCELLED",
+                "EXPIRED"
+              ]
+            }
+          },
+          {
+            "name": "createdFrom",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "Inclusive creation timestamp, years 0001–9999."
+          },
+          {
+            "name": "createdBefore",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "Exclusive creation timestamp. Must be later than createdFrom."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List the authenticated customer’s orders",
+            "headers": {
+              "X-Correlation-ID": {
+                "$ref": "./order.json#/components/headers/CorrelationId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./order.json#/components/schemas/OrderPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "./order.json#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "./order.json#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "./order.json#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "./order.json#/components/responses/UnexpectedError"
+          }
+        }
       }
     },
     "/api/v1/orders/{id}": {
@@ -169,6 +265,391 @@
       "get": {"operationId": "edgeReadiness", "security": [], "responses": {
         "200": {"$ref": "#/components/responses/Health"}, "503": {"$ref": "#/components/responses/Health"}
       }}
+    },
+    "/api/v1/merchant/orders": {
+      "get": {
+        "tags": [
+          "Orders"
+        ],
+        "operationId": "edgeListMerchantOrders",
+        "summary": "List orders within the merchant’s tenant",
+        "description": "Requires MERCHANT_ADMIN or MERCHANT_USER; includes all customers within this tenant. No identity/profile information is returned. Deterministic descending (createdAt, id) keyset order; default 20, maximum 100. Newly created later orders do not shift continuation pages. Status is a live filter; results are not a multi-request snapshot. Date range is inclusive lower/exclusive upper. Unknown or repeated parameters are rejected, including tenantId/customerId. Invalid input returns 400 with INVALID_ORDER_LIMIT, INVALID_ORDER_CURSOR, INVALID_ORDER_STATUS, INVALID_ORDER_TIMESTAMP, INVALID_ORDER_DATE_RANGE or INVALID_ORDER_FILTER.",
+        "parameters": [
+          {
+            "$ref": "./order.json#/components/parameters/CorrelationId"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "minLength": 39,
+              "maxLength": 39
+            },
+            "description": "Opaque versioned token returned as nextCursor. Keep filters unchanged when following it."
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "CREATED",
+                "PENDING_PAYMENT",
+                "CONFIRMED",
+                "STOCK_REJECTED",
+                "PAYMENT_FAILED",
+                "CANCELLED",
+                "EXPIRED"
+              ]
+            }
+          },
+          {
+            "name": "createdFrom",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "Inclusive creation timestamp, years 0001–9999."
+          },
+          {
+            "name": "createdBefore",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "Exclusive creation timestamp. Must be later than createdFrom."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List orders within the merchant’s tenant",
+            "headers": {
+              "X-Correlation-ID": {
+                "$ref": "./order.json#/components/headers/CorrelationId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./order.json#/components/schemas/OrderPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "./order.json#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "./order.json#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "./order.json#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "./order.json#/components/responses/UnexpectedError"
+          }
+        }
+      }
+    },
+    "/api/v1/merchant/orders/{id}": {
+      "get": {
+        "tags": [
+          "Orders"
+        ],
+        "operationId": "edgeGetMerchantOrder",
+        "summary": "Inspect one order within the merchant’s tenant",
+        "description": "Requires MERCHANT_ADMIN or MERCHANT_USER. No customer ownership bypass is added to the customer path.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "$ref": "./order.json#/components/parameters/CorrelationId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Inspect one order within the merchant’s tenant",
+            "headers": {
+              "X-Correlation-ID": {
+                "$ref": "./order.json#/components/headers/CorrelationId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./order.json#/components/schemas/Order"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "./order.json#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "./order.json#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "./order.json#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "./order.json#/components/responses/UnexpectedError"
+          },
+          "404": {
+            "description": "ORDER_NOT_FOUND: absent or outside the permitted tenant/owner scope.",
+            "headers": {
+              "X-Correlation-ID": {
+                "$ref": "./order.json#/components/headers/CorrelationId"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "./order.json#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/orders/{id}/history": {
+      "get": {
+        "tags": [
+          "Orders"
+        ],
+        "operationId": "edgeGetOwnOrderHistory",
+        "summary": "Read order lifecycle history",
+        "description": "Requires CUSTOMER and same tenant plus subject. State and history commit atomically. Ordered by lifecycle version; duplicates do not add entries. Legacy orders have an explicit migration-time observation followed by new transitions.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "$ref": "./order.json#/components/parameters/CorrelationId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Read order lifecycle history",
+            "headers": {
+              "X-Correlation-ID": {
+                "$ref": "./order.json#/components/headers/CorrelationId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./order.json#/components/schemas/OrderHistory"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "./order.json#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "./order.json#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "./order.json#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "./order.json#/components/responses/UnexpectedError"
+          },
+          "404": {
+            "description": "ORDER_NOT_FOUND: absent or outside the permitted tenant/owner scope.",
+            "headers": {
+              "X-Correlation-ID": {
+                "$ref": "./order.json#/components/headers/CorrelationId"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "./order.json#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/merchant/orders/{id}/history": {
+      "get": {
+        "tags": [
+          "Orders"
+        ],
+        "operationId": "edgeGetMerchantOrderHistory",
+        "summary": "Read order lifecycle history",
+        "description": "Requires MERCHANT_ADMIN or MERCHANT_USER and same tenant. State and history commit atomically. Ordered by lifecycle version; duplicates do not add entries. Legacy orders have an explicit migration-time observation followed by new transitions.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "$ref": "./order.json#/components/parameters/CorrelationId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Read order lifecycle history",
+            "headers": {
+              "X-Correlation-ID": {
+                "$ref": "./order.json#/components/headers/CorrelationId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./order.json#/components/schemas/OrderHistory"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "./order.json#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "./order.json#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "./order.json#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "./order.json#/components/responses/UnexpectedError"
+          },
+          "404": {
+            "description": "ORDER_NOT_FOUND: absent or outside the permitted tenant/owner scope.",
+            "headers": {
+              "X-Correlation-ID": {
+                "$ref": "./order.json#/components/headers/CorrelationId"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "./order.json#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/orders/{id}/cancel": {
+      "post": {
+        "tags": [
+          "Orders"
+        ],
+        "operationId": "edgeCancelOwnOrder",
+        "summary": "Cancel an owned checkout before dispatch begins",
+        "description": "Requires CUSTOMER and tenant/owner match. No body or query parameters. Synchronously commits CANCELLED only when CREATED, without deferred payment evidence, and the durable publication fence proves checkout has never been attempted. Dispatch races are serialized by database locks. Already CANCELLED returns 200 with the same resource, including after restart. All other states or attempted/uncertain publication return 409 ORDER_NOT_CANCELLABLE; no stock is released and no payment reversed. No If-Match or separate Idempotency-Key is required: the command has no mutable payload and checks eligibility atomically. The cancellation fact references the withdrawn checkout event; the checkout event is never delivered.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "$ref": "./order.json#/components/parameters/CorrelationId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cancel an owned checkout before dispatch begins",
+            "headers": {
+              "X-Correlation-ID": {
+                "$ref": "./order.json#/components/headers/CorrelationId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./order.json#/components/schemas/Order"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "./order.json#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "./order.json#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "./order.json#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "./order.json#/components/responses/UnexpectedError"
+          },
+          "404": {
+            "description": "ORDER_NOT_FOUND: absent or outside the permitted tenant/owner scope.",
+            "headers": {
+              "X-Correlation-ID": {
+                "$ref": "./order.json#/components/headers/CorrelationId"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "./order.json#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "ORDER_NOT_CANCELLABLE: checkout may already have escaped or the order has another terminal/in-flight state.",
+            "headers": {
+              "X-Correlation-ID": {
+                "$ref": "./order.json#/components/headers/CorrelationId"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "./order.json#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "x-edge-responses": {

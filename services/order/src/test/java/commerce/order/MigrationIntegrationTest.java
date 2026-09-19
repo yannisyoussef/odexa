@@ -53,6 +53,11 @@ class MigrationIntegrationTest {
         var restored = orders.findByKey(java.util.UUID.fromString("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"), "legacy-owner", "legacy-key").orElseThrow();
         assertEquals(5000, restored.order().snapshot().totalMinor());
         assertEquals(OrderStatus.CREATED, restored.order().status());
+        var history = orders.history(restored.order().id());
+        assertEquals(1, history.size());
+        assertEquals("LEGACY_SNAPSHOT", history.getFirst().reason());
+        assertEquals(restored.order().version(), history.getFirst().version());
+        assertTrue(history.getFirst().occurredAt().isAfter(restored.order().createdAt()));
         assertEquals(0, Flyway.configure().dataSource(source).load().migrate().migrationsExecuted);
     }
 

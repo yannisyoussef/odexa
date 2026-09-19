@@ -187,6 +187,11 @@ class VerificationTests(unittest.TestCase):
             report.write_text('<testsuite tests="2" skipped="0"/>')
             with contextlib.redirect_stdout(io.StringIO()):
                 ci.verify_integration_results(root)
+            source = root / "services/missing/src/test/java/example/DatabaseTest.java"
+            source.parent.mkdir(parents=True)
+            source.write_text('@Tag("integration") class DatabaseTest {}')
+            with self.assertRaises(RuntimeError):
+                ci.verify_integration_results(root)
 
     def test_fixture_credentials_cannot_be_redirected_or_sent_to_public_hosts(self):
         with self.assertRaises(smoke.SmokeFailure):

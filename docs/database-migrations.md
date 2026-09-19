@@ -35,6 +35,8 @@ docker compose run --rm --no-deps \
   -e SPRING_FLYWAY_BASELINE_VERSION=1 \
   -e SPRING_KAFKA_LISTENER_AUTO_STARTUP=false \
   -e RUNTIME_OUTBOX_ENABLED=false \
+  -e PAYMENT_WORKER_ENABLED=false \
+  -e ORDER_LIFECYCLE_WORKER_ENABLED=false \
   order
 ```
 

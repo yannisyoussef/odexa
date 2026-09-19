@@ -19,7 +19,7 @@ import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 @Component
-@ConditionalOnProperty(name = "runtime.events.enabled", havingValue = "true", matchIfMissing = true)
+@ConditionalOnProperty(name = {"runtime.events.enabled", "runtime.outbox.enabled"}, havingValue = "true", matchIfMissing = true)
 public class OutboxPublisher {
     private static final Logger LOG = LoggerFactory.getLogger(OutboxPublisher.class);
     private final JdbcTemplate jdbc;

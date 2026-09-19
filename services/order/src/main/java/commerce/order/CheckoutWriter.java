@@ -24,6 +24,7 @@ public class CheckoutWriter {
                 .orElseThrow(() -> new IllegalStateException("Idempotency winner missing"));
         Order order = matching(persisted, fingerprint);
         if (inserted) {
+            orders.recordHistory(order, order.createdAt(), "ORDER_CREATED");
             CheckoutSnapshot s = order.snapshot();
             outbox.append("order.created", order.tenantId(), order.id().toString(),
                     new OrderCreated(order.id(), order.customerId(), s.productId(), s.quantity(),

@@ -36,7 +36,7 @@ class OrderStateMachineTest {
                         };
                         case PENDING_PAYMENT -> signal == Signal.AUTHORIZED ? OrderStatus.CONFIRMED
                                 : signal == Signal.DECLINED ? OrderStatus.PAYMENT_FAILED : OrderStatus.PENDING_PAYMENT;
-                        case CONFIRMED, STOCK_REJECTED, PAYMENT_FAILED -> status;
+                        case CONFIRMED, STOCK_REJECTED, PAYMENT_FAILED, CANCELLED, EXPIRED -> status;
                     };
                     assertEquals(expected, after.status());
                     assertEquals(before.version() + (expected == status ? 0 : 1), after.version());
@@ -136,6 +136,7 @@ class OrderStateMachineTest {
         Order created = created();
         return switch (status) {
             case CREATED -> created;
+            case CANCELLED, EXPIRED -> created.stopBeforeDispatch(status);
             case PENDING_PAYMENT -> created.reserved(RESERVATION);
             case CONFIRMED -> created.reserved(RESERVATION).payment(result(true));
             case STOCK_REJECTED -> created.stockRejected();

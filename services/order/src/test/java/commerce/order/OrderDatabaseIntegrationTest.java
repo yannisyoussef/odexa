@@ -50,13 +50,16 @@ class OrderDatabaseIntegrationTest {
     @Autowired CheckoutWriter writer;
     @Autowired OrderEventConsumer consumer;
     @Autowired Inbox inbox;
+    @Autowired Outbox outbox;
+    @Autowired OrderLifecycle lifecycle;
+    @Autowired OrderQueries queries;
     @Autowired JdbcTemplate jdbc;
     @Autowired ObjectMapper mapper;
     @Autowired PlatformTransactionManager transactionManager;
 
     @BeforeEach
     void cleanIsolatedContainerDatabase() {
-        jdbc.execute("TRUNCATE TABLE customer_order, inbox, outbox");
+        jdbc.execute("TRUNCATE TABLE order_history, customer_order, inbox, outbox");
     }
 
     @Test
@@ -149,6 +152,7 @@ class OrderDatabaseIntegrationTest {
         TransactionTemplate transaction = new TransactionTemplate(transactionManager);
         assertThrows(IllegalStateException.class, () -> transaction.execute(status ->
                 failingWriter.create(candidate, "rollback", fingerprint(candidate.snapshot()))));
+        assertEquals(0, count("order_history"));
         assertEquals(0, count("customer_order"));
         assertEquals(0, count("outbox"));
         assertTrue(writer.create(candidate, "rollback", fingerprint(candidate.snapshot())).created());
@@ -172,6 +176,8 @@ class OrderDatabaseIntegrationTest {
         Order confirmed = owned(order);
         assertEquals(OrderStatus.CONFIRMED, confirmed.status());
         assertEquals(2, confirmed.version());
+        assertEquals(List.of(OrderStatus.CREATED, OrderStatus.PENDING_PAYMENT, OrderStatus.CONFIRMED),
+                orders.history(order.id()).stream().map(OrderHistoryEntry::status).toList());
         assertNull(confirmed.deferredPayment());
         assertEquals(2, count("inbox"));
         assertEquals(2, count("outbox"));
@@ -204,13 +210,14 @@ class OrderDatabaseIntegrationTest {
         Outbox failingOutbox = mock(Outbox.class);
         doThrow(new IllegalStateException("simulated outbox failure"))
                 .when(failingOutbox).append(anyString(), any(), anyString(), any(), any());
-        OrderEventConsumer failingConsumer = new OrderEventConsumer(mapper, inbox, failingOutbox, orders);
+        OrderEventConsumer failingConsumer = new OrderEventConsumer(mapper, inbox, failingOutbox, orders, java.time.Clock.systemUTC());
         String raw = mapper.writeValueAsString(payment(order, reservationId, true));
         TransactionTemplate transaction = new TransactionTemplate(transactionManager);
         assertThrows(IllegalStateException.class, () -> transaction.executeWithoutResult(status -> failingConsumer.onMessage(raw)));
         assertEquals(OrderStatus.PENDING_PAYMENT, owned(order).status());
         assertEquals(1, count("inbox"));
         assertEquals(1, count("outbox"));
+        assertEquals(2, orders.history(order.id()).size());
         consumer.onMessage(raw);
         assertEquals(OrderStatus.CONFIRMED, owned(order).status());
         assertEquals(2, count("inbox"));
@@ -226,6 +233,228 @@ class OrderDatabaseIntegrationTest {
         assertThrows(ApiException.class, () -> consumer.onMessage(mapper.writeValueAsString(crossTenant)));
         assertEquals(OrderStatus.CREATED, owned(order).status());
         assertEquals(0, count("inbox"));
+    }
+
+    @Test
+    void customerAndMerchantKeysetsRemainStableAcrossInsertionsAndHideOtherTenants() {
+        UUID tenant = UUID.randomUUID();
+        var customer = new commerce.runtime.Actor(tenant, "alice", java.util.Set.of("CUSTOMER"));
+        var merchant = new commerce.runtime.Actor(tenant, "merchant", java.util.Set.of("MERCHANT_USER"));
+        CheckoutSnapshot snapshot = OrderStateMachineTest.created().snapshot();
+        Instant time = Instant.parse("2026-09-01T00:00:00Z");
+        for (int i = 1; i <= 125; i++) {
+            Order value = Order.create(new UUID(0, i), tenant, "alice", snapshot, time);
+            writer.create(value, "page-" + i, fingerprint(snapshot));
+        }
+        Order hiddenOwner = writer.create(Order.create(UUID.randomUUID(), tenant, "bob", snapshot, time), "bob", fingerprint(snapshot)).order();
+        Order hiddenTenant = writer.create(Order.create(UUID.randomUUID(), UUID.randomUUID(), "alice", snapshot, time), "tenant", fingerprint(snapshot)).order();
+        OrderQuery query = new OrderQuery(20, OrderStatus.CREATED, time, time.plusSeconds(1), null);
+        OrderPage first = queries.list(customer, false, query);
+        assertEquals(20, first.items().size());
+        assertEquals(new UUID(0, 125), first.items().getFirst().id());
+        writer.create(Order.create(UUID.randomUUID(), tenant, "alice", snapshot, time.plusSeconds(1)), "newer", fingerprint(snapshot));
+        var seen = new java.util.HashSet<UUID>();
+        first.items().forEach(order -> assertTrue(seen.add(order.id())));
+        String cursor = first.nextCursor();
+        while (cursor != null) {
+            OrderPage page = queries.list(customer, false, new OrderQuery(20, OrderStatus.CREATED, time,
+                    time.plusSeconds(1), OrderQuery.Cursor.decode(cursor)));
+            page.items().forEach(order -> assertTrue(seen.add(order.id())));
+            cursor = page.nextCursor();
+        }
+        assertEquals(125, seen.size());
+        assertFalse(seen.contains(hiddenOwner.id()));
+        assertFalse(seen.contains(hiddenTenant.id()));
+        assertEquals(hiddenOwner, queries.get(merchant, true, hiddenOwner.id()));
+        assertEquals(404, assertThrows(ApiException.class, () -> queries.get(customer, false, hiddenOwner.id())).status());
+        assertEquals(404, assertThrows(ApiException.class, () -> queries.get(merchant, true, hiddenTenant.id())).status());
+        assertEquals(403, assertThrows(ApiException.class, () -> queries.list(customer, true, query)).status());
+        assertTrue(queries.list(customer, false, new OrderQuery(20, OrderStatus.CONFIRMED, null, null, null)).items().isEmpty());
+        assertEquals(100, queries.list(merchant, true, new OrderQuery(100, null, null, null, null)).items().size());
+        assertEquals(1, queries.history(merchant, true, hiddenOwner.id()).size());
+        assertEquals(404, assertThrows(ApiException.class, () -> queries.history(customer, false, hiddenOwner.id())).status());
+    }
+
+    @Test
+    void concurrentCancellationRetriesHaveOneDurableHistoryAndFact() throws Exception {
+        Order order = persist();
+        var actor = customer(order);
+        CyclicBarrier start = new CyclicBarrier(8);
+        try (var executor = Executors.newFixedThreadPool(8)) {
+            List<Future<Order>> futures = new ArrayList<>();
+            for (int i = 0; i < 8; i++) futures.add(executor.submit(() -> {
+                start.await(10, TimeUnit.SECONDS);
+                return lifecycle.cancel(actor, order.id());
+            }));
+            for (var future : futures) assertEquals(OrderStatus.CANCELLED, future.get(15, TimeUnit.SECONDS).status());
+        }
+        assertEquals(2, orders.history(order.id()).size());
+        assertEquals(1, count("outbox"));
+        assertEquals("order.cancelled", jdbc.queryForObject("SELECT payload->>'eventType' FROM outbox", String.class));
+        // A recreated instance and repository return the same committed result.
+        var restarted = new OrderLifecycle(new OrderRepository(jdbc), outbox, java.time.Clock.systemUTC(), java.time.Duration.ofMinutes(30));
+        Order retry = new TransactionTemplate(transactionManager).execute(status -> restarted.cancel(actor, order.id()));
+        assertEquals(owned(order), retry);
+        consumer.onMessage(mapper.writeValueAsString(reserved(order, UUID.randomUUID())));
+        consumer.onMessage(mapper.writeValueAsString(payment(order, UUID.randomUUID(), true)));
+        assertEquals(OrderStatus.CANCELLED, owned(order).status());
+        assertEquals(2, orders.history(order.id()).size());
+    }
+
+    @Test
+    void cancellationAndPublicationRaceNeverDispatchesACancelledCheckout() throws Exception {
+        for (int i = 0; i < 12; i++) {
+            Order order = writer.create(OrderStateMachineTest.created(), "race", "a".repeat(64)).order();
+            var sent = new java.util.concurrent.CopyOnWriteArrayList<Event>();
+            var kafka = kafkaRecording(sent, false);
+            var publisher = new commerce.runtime.OutboxPublisher(jdbc, kafka, transactionManager, 100, 1000);
+            CyclicBarrier start = new CyclicBarrier(2);
+            try (var executor = Executors.newFixedThreadPool(2)) {
+                Future<Integer> cancel = executor.submit(() -> {
+                    start.await(10, TimeUnit.SECONDS);
+                    try { lifecycle.cancel(customer(order), order.id()); return 200; }
+                    catch (ApiException error) { return error.status(); }
+                });
+                Future<Integer> publish = executor.submit(() -> { start.await(10, TimeUnit.SECONDS); return publisher.publishBatch(); });
+                int result = cancel.get(15, TimeUnit.SECONDS);
+                publish.get(15, TimeUnit.SECONDS);
+                publisher.publishBatch();
+                boolean checkoutSent = sent.stream().anyMatch(event -> event.payload().path("orderId").asString().equals(order.id().toString())
+                        && event.eventType().equals("order.created"));
+                assertEquals(result == 409, checkoutSent);
+                assertEquals(result == 200 ? OrderStatus.CANCELLED : OrderStatus.CREATED, owned(order).status());
+            }
+        }
+    }
+
+    @Test
+    void uncertainDispatchAndConcurrentReservationOrPaymentAlwaysForbidCancellation() throws Exception {
+        for (boolean paymentFirst : new boolean[] {false, true}) {
+            Order order = writer.create(OrderStateMachineTest.created(), "inflight", "a".repeat(64)).order();
+            var publisher = new commerce.runtime.OutboxPublisher(jdbc, kafkaRecording(new ArrayList<>(), true), transactionManager, 100, 1000);
+            assertThrows(IllegalStateException.class, publisher::publishBatch);
+            assertEquals(OrderStatus.CREATED, owned(order).status());
+            CyclicBarrier start = new CyclicBarrier(2);
+            UUID reservation = UUID.randomUUID();
+            Event event = paymentFirst ? payment(order, reservation, true) : reserved(order, reservation);
+            try (var executor = Executors.newFixedThreadPool(2)) {
+                Future<Integer> cancel = executor.submit(() -> {
+                    start.await(10, TimeUnit.SECONDS);
+                    return assertThrows(ApiException.class, () -> lifecycle.cancel(customer(order), order.id())).status();
+                });
+                Future<?> delivery = executor.submit(() -> {
+                    start.await(10, TimeUnit.SECONDS);
+                    consumer.onMessage(mapper.writeValueAsString(event));
+                    return null;
+                });
+                assertEquals(409, cancel.get(15, TimeUnit.SECONDS));
+                delivery.get(15, TimeUnit.SECONDS);
+            }
+            assertNotEquals(OrderStatus.CANCELLED, owned(order).status());
+        }
+    }
+
+    @Test
+    void expiryUsesControlledTimeSurvivesRestartAndCompetingWorkersNeverReleaseDispatchedWork() throws Exception {
+        Order order = persist();
+        Instant deadline = order.createdAt().plusSeconds(1800);
+        var transaction = new TransactionTemplate(transactionManager);
+        var early = expiryAt(deadline.minusNanos(1));
+        assertEquals(0, transaction.<Integer>execute(status -> early.expireBatch()));
+        var restarted = expiryAt(deadline);
+        CyclicBarrier start = new CyclicBarrier(2);
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            var a = executor.submit(() -> { start.await(10, TimeUnit.SECONDS); return transaction.execute(status -> restarted.expireBatch()); });
+            var b = executor.submit(() -> { start.await(10, TimeUnit.SECONDS); return transaction.execute(status -> expiryAt(deadline).expireBatch()); });
+            assertEquals(1, a.get(15, TimeUnit.SECONDS) + b.get(15, TimeUnit.SECONDS));
+        }
+        assertEquals(OrderStatus.EXPIRED, owned(order).status());
+        assertEquals(2, orders.history(order.id()).size());
+        assertEquals("DISPATCH_EXPIRED", orders.history(order.id()).getLast().reason());
+        assertEquals(0, transaction.<Integer>execute(status -> restarted.expireBatch()));
+        assertEquals(409, assertThrows(ApiException.class, () -> lifecycle.cancel(customer(order), order.id())).status());
+        Order dispatched = writer.create(OrderStateMachineTest.created(), "fenced", "b".repeat(64)).order();
+        jdbc.update("UPDATE outbox SET dispatch_started_at = CURRENT_TIMESTAMP WHERE aggregate_id = ?", dispatched.id().toString());
+        assertEquals(0, transaction.<Integer>execute(status -> expiryAt(deadline.plusSeconds(3600)).expireBatch()));
+        assertEquals(OrderStatus.CREATED, owned(dispatched).status());
+        consumer.onMessage(mapper.writeValueAsString(reserved(dispatched, UUID.randomUUID())));
+        assertEquals(0, transaction.<Integer>execute(status -> expiryAt(deadline.plusSeconds(86400)).expireBatch()));
+        assertEquals(OrderStatus.PENDING_PAYMENT, owned(dispatched).status());
+    }
+
+    @Test
+    void expiryRacingPublicationNeverDispatchesExpiredCheckout() throws Exception {
+        for (int i = 0; i < 8; i++) {
+            Order order = writer.create(OrderStateMachineTest.created(), "expiry-race", "a".repeat(64)).order();
+            var sent = new java.util.concurrent.CopyOnWriteArrayList<Event>();
+            var publisher = new commerce.runtime.OutboxPublisher(jdbc, kafkaRecording(sent, false), transactionManager, 100, 1000);
+            var transaction = new TransactionTemplate(transactionManager);
+            var worker = expiryAt(order.createdAt().plusSeconds(1800));
+            CyclicBarrier start = new CyclicBarrier(2);
+            try (var executor = Executors.newFixedThreadPool(2)) {
+                var expire = executor.submit(() -> { start.await(10, TimeUnit.SECONDS); return transaction.execute(status -> worker.expireBatch()); });
+                var publish = executor.submit(() -> { start.await(10, TimeUnit.SECONDS); return publisher.publishBatch(); });
+                expire.get(15, TimeUnit.SECONDS);
+                publish.get(15, TimeUnit.SECONDS);
+                publisher.publishBatch();
+                boolean checkoutSent = sent.stream().anyMatch(event -> event.eventType().equals("order.created")
+                        && event.payload().path("orderId").asString().equals(order.id().toString()));
+                assertEquals(owned(order).status() != OrderStatus.EXPIRED, checkoutSent);
+            }
+        }
+    }
+
+    @Test
+    void lifecycleFailureRollsBackWithdrawalHistoryStateAndAllowsRetry() {
+        Order order = persist();
+        Outbox failing = spy(new Outbox(jdbc, mapper));
+        doThrow(new IllegalStateException("outbox unavailable")).when(failing).append(eq("order.cancelled"), any(), anyString(), any(), any());
+        var broken = new OrderLifecycle(orders, failing, java.time.Clock.systemUTC(), java.time.Duration.ofMinutes(30));
+        assertThrows(IllegalStateException.class, () -> new TransactionTemplate(transactionManager)
+                .execute(status -> broken.cancel(customer(order), order.id())));
+        assertEquals(OrderStatus.CREATED, owned(order).status());
+        assertEquals(1, orders.history(order.id()).size());
+        assertEquals("order.created", jdbc.queryForObject("SELECT payload->>'eventType' FROM outbox", String.class));
+        assertEquals(OrderStatus.CANCELLED, lifecycle.cancel(customer(order), order.id()).status());
+    }
+
+    @Test
+    void rejectionAndDeclineCreateBusinessHistoryAndCausalFactsWithoutDuplicates() {
+        Order rejected = persist();
+        Event rejection = event(rejected, "inventory.rejected", UUID.randomUUID(), UUID.randomUUID(),
+                Map.of("orderId", rejected.id(), "reason", "INSUFFICIENT_STOCK"));
+        consumer.onMessage(mapper.writeValueAsString(rejection));
+        consumer.onMessage(mapper.writeValueAsString(rejection));
+        assertEquals(List.of("ORDER_CREATED", "INSUFFICIENT_STOCK"), orders.history(rejected.id()).stream().map(OrderHistoryEntry::reason).toList());
+        assertEquals(409, assertThrows(ApiException.class, () -> lifecycle.cancel(customer(rejected), rejected.id())).status());
+        Order declined = writer.create(OrderStateMachineTest.created(), "declined", "b".repeat(64)).order();
+        UUID reservation = UUID.randomUUID();
+        consumer.onMessage(mapper.writeValueAsString(reserved(declined, reservation)));
+        Event decline = payment(declined, reservation, false);
+        consumer.onMessage(mapper.writeValueAsString(decline));
+        consumer.onMessage(mapper.writeValueAsString(decline));
+        assertEquals(List.of("ORDER_CREATED", "STOCK_RESERVED", "PAYMENT_DECLINED"), orders.history(declined.id()).stream().map(OrderHistoryEntry::reason).toList());
+        assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM outbox WHERE payload->>'eventType' = 'order.rejected'", Integer.class));
+        assertEquals(409, assertThrows(ApiException.class, () -> lifecycle.cancel(customer(declined), declined.id())).status());
+    }
+
+    private OrderLifecycle expiryAt(Instant time) {
+        return new OrderLifecycle(new OrderRepository(jdbc), outbox, java.time.Clock.fixed(time, java.time.ZoneOffset.UTC), java.time.Duration.ofMinutes(30));
+    }
+
+    private static commerce.runtime.Actor customer(Order order) {
+        return new commerce.runtime.Actor(order.tenantId(), order.customerId(), java.util.Set.of("CUSTOMER"));
+    }
+
+    @SuppressWarnings("unchecked")
+    private org.springframework.kafka.core.KafkaTemplate<Object, Object> kafkaRecording(List<Event> events, boolean fail) {
+        var kafka = (org.springframework.kafka.core.KafkaTemplate<Object, Object>) mock(org.springframework.kafka.core.KafkaTemplate.class);
+        when(kafka.send(anyString(), any(), any())).thenAnswer(call -> {
+            events.add(mapper.readValue((String) call.getArgument(2), Event.class));
+            return fail ? java.util.concurrent.CompletableFuture.failedFuture(new IllegalStateException("uncertain send"))
+                    : java.util.concurrent.CompletableFuture.completedFuture(null);
+        });
+        return kafka;
     }
 
     private int count(String table) {
@@ -282,9 +511,13 @@ class OrderDatabaseIntegrationTest {
         @Bean OrderRepository orders(JdbcTemplate jdbc) { return new OrderRepository(jdbc); }
         @Bean Inbox inbox(JdbcTemplate jdbc) { return new Inbox(jdbc); }
         @Bean Outbox outbox(JdbcTemplate jdbc, ObjectMapper mapper) { return new Outbox(jdbc, mapper); }
+        @Bean OrderQueries queries(OrderRepository orders) { return new OrderQueries(orders); }
+        @Bean OrderLifecycle lifecycle(OrderRepository orders, Outbox outbox) {
+            return new OrderLifecycle(orders, outbox, java.time.Clock.systemUTC(), java.time.Duration.ofMinutes(30));
+        }
         @Bean CheckoutWriter writer(OrderRepository orders, Outbox outbox) { return new CheckoutWriter(orders, outbox); }
         @Bean OrderEventConsumer consumer(ObjectMapper mapper, Inbox inbox, Outbox outbox, OrderRepository orders) {
-            return new OrderEventConsumer(mapper, inbox, outbox, orders);
+            return new OrderEventConsumer(mapper, inbox, outbox, orders, java.time.Clock.systemUTC());
         }
     }
 }
