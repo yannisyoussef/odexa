@@ -193,6 +193,28 @@ class PaymentPersistenceIntegrationTest {
         assertEquals(0, jdbc.queryForObject("SELECT attempts FROM payment", Integer.class));
     }
 
+    @Test void backlogLargerThanCleanupBatchCannotDispatchExpiredPaymentOrRefundCommands() {
+        for (int i = 0; i < 101; i++) {
+            UUID order = authorized();
+            refunds.create(merchant(), order, "refund", 2500, "USD");
+        }
+        jdbc.execute("UPDATE refund SET created_at = CURRENT_TIMESTAMP - INTERVAL '25 hours'");
+        assertTrue(refunds.claim().isEmpty());
+        assertEquals(0, jdbc.queryForObject("SELECT sum(attempts) FROM refund", Integer.class));
+        clean();
+        for (int i = 0; i < 101; i++) consumer.receive(raw(UUID.randomUUID(), UUID.randomUUID(), 2500));
+        jdbc.execute("UPDATE payment SET created_at = CURRENT_TIMESTAMP - INTERVAL '25 hours'");
+        assertTrue(store.claim().isEmpty());
+        assertEquals(0, jdbc.queryForObject("SELECT sum(attempts) FROM payment", Integer.class));
+    }
+
+    @Test void refundBacklogCannotExceedCommandAttemptBudgetOutsideCleanupBatch() {
+        for (int i = 0; i < 101; i++) refunds.create(merchant(), authorized(), "refund", 2500, "USD");
+        jdbc.execute("UPDATE refund SET attempts = 3");
+        assertTrue(refunds.claim().isEmpty());
+        assertEquals(303, jdbc.queryForObject("SELECT sum(attempts) FROM refund", Integer.class));
+    }
+
     @Test void concurrentWebhookReplaySchedulesLookupOnceWithoutTrustingSnapshot() throws Exception {
         UUID order = UUID.randomUUID();
         consumer.receive(raw(UUID.randomUUID(), order, 2500));

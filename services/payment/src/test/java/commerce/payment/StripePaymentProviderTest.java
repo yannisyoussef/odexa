@@ -68,6 +68,106 @@ class StripePaymentProviderTest {
             assertEquals(PaymentProvider.RefundOutcome.SUCCEEDED, fixture.provider.refund(command).outcome());
         }
     }
+    @Test void cardFailureBecomesDeclineOnlyAfterValidatedIdempotentCancellation() throws Exception {
+        String failure = "{\"error\":{\"type\":\"card_error\",\"code\":\"card_declined\",\"message\":\"fixture\",\"payment_intent\":"
+                + intent("requires_payment_method", 2500, "usd", order, false) + "}}";
+        try (var fixture = new Fixture(402, exchange -> failure)) {
+            var cancels = new java.util.concurrent.atomic.AtomicInteger();
+            fixture.server.createContext("/v1/payment_intents/pi_fixture/cancel", exchange -> {
+                try (exchange) {
+                    assertEquals(order + ":cancel", exchange.getRequestHeaders().getFirst("Idempotency-Key"));
+                    cancels.incrementAndGet();
+                    byte[] bytes = intent("canceled", 2500, "usd", order, false).getBytes(StandardCharsets.UTF_8);
+                    exchange.sendResponseHeaders(200, bytes.length); exchange.getResponseBody().write(bytes);
+                }
+            });
+            assertEquals(PaymentProvider.Outcome.DECLINED, fixture.provider.authorize(request).outcome());
+            assertEquals(1, cancels.get());
+        }
+        // If cancellation itself fails, stock must remain protected.
+        try (var fixture = new Fixture(402, exchange -> failure)) {
+            assertThrows(PaymentProvider.UncertainOutcome.class, () -> fixture.provider.authorize(request));
+        }
+    }
+    @Test void providerHttpErrorsMalformedAndOversizedBodiesNeverBecomeDeclines() throws Exception {
+        for (int code : new int[]{400, 409, 429, 500, 503}) {
+            try (var fixture = new Fixture(code, exchange -> "{\"error\":{\"type\":\"api_error\",\"message\":\"private provider payload\"}}")) {
+                var error = assertThrows(PaymentProvider.UncertainOutcome.class, () -> fixture.provider.authorize(request));
+                assertNull(error.getCause()); assertFalse(error.getMessage().contains("private"));
+            }
+        }
+        for (String invalid : new String[]{"{", "x".repeat(16385)}) {
+            try (var fixture = new Fixture(exchange -> invalid)) {
+                assertThrows(PaymentProvider.UncertainOutcome.class, () -> fixture.provider.lookup(request, "pi_fixture"));
+            }
+        }
+    }
+    @Test void stripeTotalDeadlineIncludesAStalledResponseBody() throws Exception {
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var headers = new java.util.concurrent.CountDownLatch(1);
+        try (var fixture = new Fixture(exchange -> "{}")) {
+            fixture.server.createContext("/v1/payment_intents/pi_fixture", exchange -> {
+                try (exchange) {
+                    exchange.sendResponseHeaders(200, 1000);
+                    exchange.getResponseBody().write('{'); exchange.getResponseBody().flush(); headers.countDown();
+                    try { release.await(10, java.util.concurrent.TimeUnit.SECONDS); }
+                    catch (InterruptedException error) { Thread.currentThread().interrupt(); }
+                }
+            });
+            try {
+                assertTimeoutPreemptively(java.time.Duration.ofSeconds(7), () ->
+                        assertThrows(PaymentProvider.UncertainOutcome.class, () -> fixture.provider.lookup(request, "pi_fixture")));
+                assertEquals(0, headers.getCount());
+            } finally { release.countDown(); }
+        }
+    }
+    @Test void refundPendingFailureAndWrongLinkageAreDistinct() throws Exception {
+        UUID refund = UUID.randomUUID();
+        var command = new PaymentProvider.RefundRequest(refund, order, "pi_fixture", 2500, "USD", "stripe");
+        String template = """
+                {"id":"re_fixture","object":"refund","amount":2500,"currency":"usd",
+                "payment_intent":"pi_fixture","status":"%s","metadata":{"odexa_refund_id":"%s"}}
+                """;
+        for (String status : new String[]{"pending", "requires_action", "failed", "canceled"}) {
+            try (var fixture = new Fixture(exchange -> template.formatted(status, refund))) {
+                var expected = status.equals("failed") || status.equals("canceled")
+                        ? PaymentProvider.RefundOutcome.FAILED : PaymentProvider.RefundOutcome.REVIEW_REQUIRED;
+                assertEquals(expected, fixture.provider.lookupRefund(command, "re_fixture").outcome());
+            }
+        }
+        String valid = template.formatted("succeeded", refund);
+        for (String invalid : new String[]{valid.replace("2500", "2499"), valid.replace("usd", "eur"),
+                valid.replace("pi_fixture", "pi_other"), valid.replace(refund.toString(), UUID.randomUUID().toString()),
+                valid.replace("re_fixture", "re_other")}) {
+            try (var fixture = new Fixture(exchange -> invalid)) {
+                assertThrows(PaymentProvider.UncertainOutcome.class, () -> fixture.provider.lookupRefund(command, "re_fixture"));
+            }
+        }
+    }
+
+    @Test void lostRefundResponseIsRecoveredOnlyByUniqueScopedReadOnlyLookup() throws Exception {
+        UUID refund = UUID.randomUUID();
+        var command = new PaymentProvider.RefundRequest(refund, order, "pi_fixture", 2500, "USD", "stripe");
+        String result = """
+                {"id":"re_fixture","object":"refund","amount":2500,"currency":"usd",
+                "payment_intent":"pi_fixture","status":"succeeded","metadata":{"odexa_refund_id":"%s"}}
+                """.formatted(refund);
+        for (int scenario = 0; scenario < 4; scenario++) {
+            String data = scenario == 1 ? "" : scenario == 2 ? result + "," + result : result;
+            String response = "{\"object\":\"list\",\"data\":[" + data + "],\"has_more\":" + (scenario == 3) + "}";
+            try (var fixture = new Fixture(exchange -> {
+                assertEquals("GET", exchange.getRequestMethod());
+                assertEquals("/v1/refunds", exchange.getRequestURI().getPath());
+                assertTrue(exchange.getRequestURI().getRawQuery().contains("payment_intent=pi_fixture"));
+                return response;
+            })) {
+                if (scenario == 0) assertEquals(PaymentProvider.RefundOutcome.SUCCEEDED,
+                        fixture.provider.lookupRefund(command, null).outcome());
+                else assertThrows(PaymentProvider.UncertainOutcome.class, () -> fixture.provider.lookupRefund(command, null));
+            }
+        }
+    }
+
     @Test void liveKeysAreRejectedAtStartup() {
         assertThrows(IllegalArgumentException.class, () -> StripePaymentProvider.client("sk_live_notallowed", "https://api.stripe.com"));
     }
@@ -81,13 +181,14 @@ class StripePaymentProviderTest {
     static class Fixture implements AutoCloseable {
         final HttpServer server;
         final StripePaymentProvider provider;
-        Fixture(Handler handler) throws Exception {
+        Fixture(Handler handler) throws Exception { this(200, handler); }
+        Fixture(int status, Handler handler) throws Exception {
             server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
             server.createContext("/", exchange -> {
                 try (exchange) {
                     byte[] bytes = handler.respond(exchange).getBytes(StandardCharsets.UTF_8);
                     exchange.getResponseHeaders().set("Content-Type", "application/json");
-                    exchange.sendResponseHeaders(200, bytes.length);
+                    exchange.sendResponseHeaders(status, bytes.length);
                     exchange.getResponseBody().write(bytes);
                 }
             });

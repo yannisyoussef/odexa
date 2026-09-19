@@ -99,7 +99,8 @@ public class RefundStore {
                 """, retry.maxAttempts());
         return jdbc.query("""
                 WITH due AS (
-                    SELECT id FROM refund WHERE status IN ('PENDING', 'REVIEW_REQUIRED')
+                    SELECT id FROM refund WHERE ((status = 'PENDING' AND attempts < ?
+                        AND created_at >= CURRENT_TIMESTAMP - INTERVAL '23 hours') OR status = 'REVIEW_REQUIRED')
                     AND next_attempt_at <= CURRENT_TIMESTAMP
                     AND (lease_until IS NULL OR lease_until <= CURRENT_TIMESTAMP)
                     ORDER BY next_attempt_at, created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED
@@ -115,7 +116,7 @@ public class RefundStore {
                 rs.getLong("amount_minor"), rs.getString("currency"), rs.getString("provider"),
                 rs.getString("payment_provider_id"), rs.getString("provider_id"), rs.getString("status"),
                 rs.getInt("attempts"), rs.getInt("reconciliation_attempts"), rs.getObject("lease_token", UUID.class),
-                rs.getString("correlation_id")), UUID.randomUUID(), retry.leaseSeconds()).stream().findFirst();
+                rs.getString("correlation_id")), retry.maxAttempts(), UUID.randomUUID(), retry.leaseSeconds()).stream().findFirst();
     }
     @Transactional
     public boolean complete(Claim claim, PaymentProvider.RefundResult result) {

@@ -250,14 +250,14 @@
         },
         "responses": {
           "201": {
-            "description": "New durable payment outcome",
+            "description": "New durable full refund outcome",
             "headers": {
               "Location": {
                 "schema": {
                   "type": "string",
                   "format": "uri-reference"
                 },
-                "description": "Provider payment lookup URI"
+                "description": "Provider refund lookup URI"
               },
               "Cache-Control": {
                 "schema": {
@@ -301,6 +301,9 @@
           },
           "503": {
             "description": "Command response unavailable; outcome may have committed. Retry only with the same key or lookup."
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
           }
         }
       }
@@ -586,7 +589,7 @@
         }
       },
       "NotFound": {
-        "description": "Unknown provider payment UUID",
+        "description": "Unknown provider payment or refund command UUID",
         "content": {
           "application/problem+json": {
             "schema": {

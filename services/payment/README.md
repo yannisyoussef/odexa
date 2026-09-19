@@ -1,6 +1,6 @@
 # Payment service
 
-Internal payment orchestration for Odexa. Default HTTP port **8084**; only `GET /api/v1/payments/{orderId}` is public through the gateway. Runtime verifies bearer issuer/audience; this service queries by both JWT tenant and subject. There is no tenant-header override, role-based ownership bypass, or public creation endpoint.
+Provider-neutral payment service, default port **8084**. It exposes owned payment/refund queries, explicit merchant full-refund commands, and fixed signed provider webhook POSTs. Payment creation remains internal after inventory reservation. See the [HTTP contract](../../contracts/openapi/payment.json) for the complete surface.
 
 ## Durability and uncertainty
 
@@ -32,7 +32,7 @@ rows remain simulator-backed. Enable Stripe explicitly with `STRIPE_ENABLED=true
 set comma-separated `STRIPE_WEBHOOK_SECRETS`. Never commit these values. Test Mode only;
 live keys fail startup. Keep simulator credentials available for historical simulator rows.
 A restricted Stripe key needs PaymentIntent read/write and Refund read/write permissions.
-The pinned official Java SDK is 33.4.2, with its matching API version. Each HTTP exchange has
+The pinned official Java SDK is 33.4.2, using API version `2026-08-26.dahlia`. Each HTTP exchange has
 a five-second total deadline and 16 KiB response bound; SDK retries are disabled. Application
 command retries use stable order/refund UUID keys. The initial phase stops before 23 hours;
 reconciliation only reads. Provider unavailability, missing search results and action-required

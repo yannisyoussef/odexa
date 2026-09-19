@@ -148,6 +148,14 @@ class SimulatorHttpIntegrationTest {
         }
     }
 
+    @Test void refundForUnknownProviderPaymentIsHiddenAsNotFound() throws Exception {
+        UUID refund = UUID.randomUUID();
+        String payload = mapper.writeValueAsString(Map.of("refundId", refund, "paymentId", UUID.randomUUID(),
+                "amountMinor", 2500, "currency", "USD"));
+        assertEquals(404, refundPost(refund, payload).statusCode());
+        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM provider_refund", Integer.class));
+    }
+
     @Test void callbackRetryUsesSameDurableEventAndFreshSignatureAndFencesExpiredWorkers() throws Exception {
         UUID order = UUID.randomUUID(); post(order, body(order, 2500, "pm_approved"), KEY);
         var first = deliveries.claim().orElseThrow();

@@ -71,7 +71,8 @@ public class PaymentStore {
         UUID token = UUID.randomUUID();
         List<Claim> claims = jdbc.query("""
                 WITH due AS (
-                    SELECT id FROM payment WHERE ((status = 'PENDING' AND attempts < ?) OR status = 'REVIEW_REQUIRED')
+                    SELECT id FROM payment WHERE ((status = 'PENDING' AND attempts < ?
+                        AND created_at >= CURRENT_TIMESTAMP - INTERVAL '23 hours') OR status = 'REVIEW_REQUIRED')
                       AND next_attempt_at <= CURRENT_TIMESTAMP
                       AND (lease_until IS NULL OR lease_until <= CURRENT_TIMESTAMP)
                     ORDER BY next_attempt_at, created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED

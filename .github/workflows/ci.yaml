@@ -52,6 +52,8 @@ jobs:
           python-version: '3.13'
       - name: Build images, await health and run real HTTP smoke
         run: python3 -B scripts/compose-smoke.py
+      - name: Repeat smoke with preserved database volumes
+        run: python3 -B scripts/compose-smoke.py --no-build
       - name: Service status (no logs/config/credentials)
         if: failure()
         run: docker compose ps --all
