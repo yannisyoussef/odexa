@@ -59,12 +59,30 @@ public class OutboxPublisher {
      * serialize mutations of the same aggregate in their own business transactions.
      */
     public int publishBatch() {
+        // Commit before the first possible send. A failed/uncertain acknowledgement must
+        // never restore eligibility for an operation requiring proof of no dispatch.
+        transaction.executeWithoutResult(status -> {
+            JdbcTransactions.requireWritable(jdbc);
+            List<UUID> claims = jdbc.query("""
+                    SELECT o.event_id FROM outbox o
+                    WHERE o.published_at IS NULL AND o.dispatch_started_at IS NULL
+                      AND NOT EXISTS (
+                        SELECT 1 FROM outbox previous
+                        WHERE previous.aggregate_id = o.aggregate_id
+                          AND previous.sequence < o.sequence AND previous.published_at IS NULL
+                      )
+                    ORDER BY o.sequence LIMIT ? FOR UPDATE OF o SKIP LOCKED
+                    """, (row, index) -> row.getObject("event_id", UUID.class), batchSize);
+            for (UUID id : claims) {
+                jdbc.update("UPDATE outbox SET dispatch_started_at = clock_timestamp() WHERE event_id = ?", id);
+            }
+        });
         Integer count = transaction.execute(status -> {
             JdbcTransactions.requireWritable(jdbc);
             List<Pending> pending = jdbc.query("""
                     SELECT o.event_id, o.aggregate_id, o.topic, o.payload::text
                     FROM outbox o
-                    WHERE o.published_at IS NULL
+                    WHERE o.published_at IS NULL AND o.dispatch_started_at IS NOT NULL
                       AND NOT EXISTS (
                         SELECT 1 FROM outbox previous
                         WHERE previous.aggregate_id = o.aggregate_id

@@ -197,8 +197,7 @@ class PaymentPersistenceIntegrationTest {
     static class Config {
         @Bean DataSource dataSource() {
             var source = new DriverManagerDataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
-            new ResourceDatabasePopulator(new ClassPathResource("runtime-schema.sql"),
-                    new ClassPathResource("schema.sql")).execute(source);
+            org.flywaydb.core.Flyway.configure().dataSource(source).load().migrate();
             return source;
         }
         @Bean JdbcTemplate jdbcTemplate(DataSource source) { return new JdbcTemplate(source); }

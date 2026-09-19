@@ -3,6 +3,7 @@ package commerce.runtime;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -41,4 +42,25 @@ public class Outbox {
                 mapper.writeValueAsString(event), Timestamp.from(event.occurredAt()));
         return event.eventId();
     }
+
+    /** Withdraw only when the durable publisher fence proves no send has ever started. */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public Optional<UUID> withdrawUnattempted(String eventType, UUID tenantId, String aggregateId) {
+        JdbcTransactions.requireWritable(jdbc);
+        var rows = jdbc.query("""
+                SELECT event_id, dispatch_started_at, published_at FROM outbox
+                WHERE tenant_id = ? AND aggregate_id = ? AND payload->>'eventType' = ?
+                ORDER BY sequence FOR UPDATE
+                """, (row, index) -> new Dispatch(row.getObject("event_id", UUID.class),
+                        row.getTimestamp("dispatch_started_at") != null || row.getTimestamp("published_at") != null),
+                tenantId, aggregateId, eventType);
+        if (rows.size() != 1 || rows.getFirst().attempted()) {
+            return Optional.empty();
+        }
+        UUID id = rows.getFirst().id();
+        jdbc.update("DELETE FROM outbox WHERE event_id = ?", id);
+        return Optional.of(id);
+    }
+
+    private record Dispatch(UUID id, boolean attempted) { }
 }

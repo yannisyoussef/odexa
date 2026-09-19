@@ -1,0 +1,52 @@
+-- Initial immutable runtime schema. Every service owns its own local database.
+CREATE TABLE IF NOT EXISTS outbox (
+    sequence bigint GENERATED ALWAYS AS IDENTITY UNIQUE NOT NULL,
+    event_id uuid PRIMARY KEY,
+    tenant_id uuid NOT NULL,
+    aggregate_id varchar(128) NOT NULL,
+    topic varchar(100) NOT NULL CHECK (topic = 'commerce.events.v1'),
+    payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+    occurred_at timestamptz NOT NULL,
+    published_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS outbox_unpublished_sequence ON outbox (sequence)
+    WHERE published_at IS NULL;
+CREATE INDEX IF NOT EXISTS outbox_unpublished_aggregate ON outbox (aggregate_id, sequence)
+    WHERE published_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS inbox (
+    consumer varchar(128) NOT NULL,
+    event_id uuid NOT NULL,
+    received_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (consumer, event_id)
+);
+
+CREATE TABLE IF NOT EXISTS customer_order (
+    id UUID PRIMARY KEY,
+    tenant_id UUID NOT NULL,
+    customer_id VARCHAR(255) NOT NULL,
+    idempotency_key VARCHAR(128) NOT NULL,
+    fingerprint CHAR(64) NOT NULL,
+    product_id UUID NOT NULL,
+    quantity INTEGER NOT NULL CHECK (quantity BETWEEN 1 AND 100),
+    product_name TEXT NOT NULL,
+    unit_price_minor BIGINT NOT NULL CHECK (unit_price_minor >= 0),
+    total_minor BIGINT NOT NULL CHECK (total_minor >= 0),
+    currency VARCHAR(3) NOT NULL CHECK (currency = 'USD'),
+    catalog_version BIGINT NOT NULL CHECK (catalog_version >= 0),
+    payment_method VARCHAR(32) NOT NULL CHECK (payment_method IN ('pm_approved', 'pm_declined')),
+    status VARCHAR(32) NOT NULL CHECK (status IN ('CREATED', 'PENDING_PAYMENT', 'CONFIRMED', 'STOCK_REJECTED', 'PAYMENT_FAILED')),
+    version BIGINT NOT NULL CHECK (version >= 0),
+    created_at TIMESTAMPTZ NOT NULL,
+    reservation_event_id UUID,
+    deferred_event_id UUID,
+    deferred_causation_id UUID,
+    deferred_payment_id UUID,
+    deferred_authorized BOOLEAN,
+    CONSTRAINT order_idempotency_scope UNIQUE (tenant_id, customer_id, idempotency_key),
+    CHECK (total_minor::numeric = unit_price_minor::numeric * quantity),
+    CHECK (status NOT IN ('PENDING_PAYMENT', 'CONFIRMED', 'PAYMENT_FAILED') OR reservation_event_id IS NOT NULL),
+    CHECK (status NOT IN ('CREATED', 'STOCK_REJECTED') OR reservation_event_id IS NULL),
+    CHECK ((deferred_event_id IS NULL AND deferred_causation_id IS NULL AND deferred_payment_id IS NULL AND deferred_authorized IS NULL)
+        OR (status = 'CREATED' AND deferred_event_id IS NOT NULL AND deferred_causation_id IS NOT NULL AND deferred_payment_id IS NOT NULL AND deferred_authorized IS NOT NULL))
+);

@@ -4,6 +4,8 @@
 .env
 .env.*
 .local
+local
+prompts
 .idea
 **/*.log
 **/__pycache__

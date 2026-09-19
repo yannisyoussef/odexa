@@ -48,8 +48,7 @@ class InventoryPostgresIntegrationTest {
     @BeforeEach
     void setup() {
         var dataSource = new DriverManagerDataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
-        new ResourceDatabasePopulator(new ClassPathResource("runtime-schema.sql"), new ClassPathResource("schema.sql"))
-                .execute(dataSource);
+        org.flywaydb.core.Flyway.configure().dataSource(dataSource).load().migrate();
         jdbc = new JdbcTemplate(dataSource);
         tx = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
         tx.setTimeout(15);

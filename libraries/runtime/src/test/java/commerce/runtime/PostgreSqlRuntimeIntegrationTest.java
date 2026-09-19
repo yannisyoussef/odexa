@@ -37,6 +37,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 @Tag("integration")
@@ -186,6 +187,26 @@ class PostgreSqlRuntimeIntegrationTest {
         assertThat(published()).isZero();
         assertThatThrownBy(() -> publisher(1, 50).publishBatch()).isInstanceOf(IllegalStateException.class);
         assertThat(published()).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM outbox WHERE dispatch_started_at IS NOT NULL", Long.class))
+                .isEqualTo(1);
+        // New process/instance sees the fence even though neither send committed its marker.
+        var restartedOutbox = new Outbox(jdbc, MAPPER);
+        var withdrawn = transaction.execute(status -> restartedOutbox.withdrawUnattempted("order.created", TENANT, "order"));
+        assertThat(withdrawn).isEmpty();
+    }
+
+    @Test
+    void withdrawalCommitsWithBusinessMutationAndPublisherCannotSendIt() {
+        append("cancelled-order", "order.created");
+        assertThatThrownBy(() -> transaction.executeWithoutResult(status -> {
+            assertThat(outbox.withdrawUnattempted("order.created", TENANT, "cancelled-order")).isPresent();
+            throw new IllegalStateException("rollback");
+        })).isInstanceOf(IllegalStateException.class);
+        assertThat(count("outbox")).isEqualTo(1);
+        transaction.executeWithoutResult(status ->
+                assertThat(outbox.withdrawUnattempted("order.created", TENANT, "cancelled-order")).isPresent());
+        assertThat(publisher(1, 1000).publishBatch()).isZero();
+        verifyNoInteractions(kafka);
     }
 
     @Test

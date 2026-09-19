@@ -33,7 +33,7 @@ class CatalogPostgresIntegrationTest {
     @BeforeEach
     void setup() {
         var dataSource = new DriverManagerDataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
-        new ResourceDatabasePopulator(new ClassPathResource("schema.sql")).execute(dataSource);
+        org.flywaydb.core.Flyway.configure().dataSource(dataSource).load().migrate();
         jdbc = new JdbcTemplate(dataSource);
         service = new CatalogService(jdbc);
     }
