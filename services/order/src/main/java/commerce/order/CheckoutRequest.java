@@ -12,10 +12,10 @@ import java.util.HexFormat;
 import java.util.UUID;
 
 public record CheckoutRequest(@NotNull UUID productId, @Min(1) @Max(100) int quantity,
-                              @NotNull @Pattern(regexp = "pm_approved|pm_declined") String paymentMethod) {
+                              @NotNull @Pattern(regexp = "pm_[A-Za-z0-9_]{1,125}") String paymentMethod) {
     public void validate() {
         if (productId == null || quantity < 1 || quantity > 100
-                || !("pm_approved".equals(paymentMethod) || "pm_declined".equals(paymentMethod))) {
+                || (paymentMethod == null || !paymentMethod.matches("pm_[A-Za-z0-9_]{1,125}"))) {
             throw new ApiException(400, "INVALID_CHECKOUT", "Invalid checkout request");
         }
     }

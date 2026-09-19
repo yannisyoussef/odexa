@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SECRET_KEYS = (
     "POSTGRES_PASSWORD", "CATALOG_DB_PASSWORD", "INVENTORY_DB_PASSWORD", "ORDER_DB_PASSWORD",
     "PAYMENT_DB_PASSWORD", "SIMULATOR_DB_PASSWORD", "KEYCLOAK_DB_PASSWORD",
-    "KC_BOOTSTRAP_ADMIN_PASSWORD", "LOCAL_FIXTURE_PASSWORD", "PROVIDER_API_KEY",
+    "KC_BOOTSTRAP_ADMIN_PASSWORD", "LOCAL_FIXTURE_PASSWORD", "PROVIDER_API_KEY", "SIMULATOR_WEBHOOK_SECRET",
 )
 
 
@@ -70,6 +70,13 @@ def bootstrap(root=ROOT):
             stream.writelines(f"{key}={value}\n" for key, value in values.items())
     else:
         values = read_env(env_path)
+    if any(not values.get(key) for key in SECRET_KEYS if key != "SIMULATOR_WEBHOOK_SECRET"):
+        raise ValueError("Existing .env is incomplete; refusing automatic credential rotation")
+    # Add only the new independent signing credential; never rotate existing keys.
+    if not created and "SIMULATOR_WEBHOOK_SECRET" not in values:
+        values["SIMULATOR_WEBHOOK_SECRET"] = secrets.token_urlsafe(32)
+        with env_path.open("a") as stream:
+            stream.write("\nSIMULATOR_WEBHOOK_SECRET=" + values["SIMULATOR_WEBHOOK_SECRET"] + "\n")
     if any(not values.get(key) for key in SECRET_KEYS):
         raise ValueError("Existing .env is incomplete; refusing automatic credential rotation")
     env_path.chmod(0o600)

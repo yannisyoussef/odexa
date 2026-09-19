@@ -102,6 +102,28 @@ class MigrationIntegrationTest {
         return kafka;
     }
 
+    @Test void releasedV020StoppedOrdersAndHistorySurviveOpaqueReferenceUpgrade() {
+        var source = isolated();
+        Flyway.configure().dataSource(source).target("3").load().migrate();
+        var jdbc = new JdbcTemplate(source);
+        for (String status : java.util.List.of("CANCELLED", "EXPIRED")) {
+            UUID id = UUID.randomUUID();
+            jdbc.update("""
+                    INSERT INTO customer_order(id,tenant_id,customer_id,idempotency_key,fingerprint,product_id,
+                        quantity,product_name,unit_price_minor,total_minor,currency,catalog_version,payment_method,status,version,created_at)
+                    VALUES (?, ?, 'owner', ?, repeat('a',64), ?, 1, 'product', 2500, 2500, 'USD', 1, 'pm_approved', ?, 1, CURRENT_TIMESTAMP)
+                    """, id, UUID.randomUUID(), UUID.randomUUID().toString(), UUID.randomUUID(), status);
+            jdbc.update("INSERT INTO order_history(order_id,version,status,occurred_at,reason) VALUES (?,1,?,CURRENT_TIMESTAMP,?)",
+                    id, status, status.equals("CANCELLED") ? "CUSTOMER_CANCELLED" : "DISPATCH_EXPIRED");
+        }
+        var before = jdbc.queryForList("SELECT * FROM customer_order ORDER BY id");
+        var history = jdbc.queryForList("SELECT * FROM order_history ORDER BY order_id");
+        var upgrade = Flyway.configure().dataSource(source).load(); upgrade.migrate(); upgrade.validate();
+        assertEquals(before, jdbc.queryForList("SELECT * FROM customer_order ORDER BY id"));
+        assertEquals(history, jdbc.queryForList("SELECT * FROM order_history ORDER BY order_id"));
+        assertEquals(0, upgrade.migrate().migrationsExecuted);
+    }
+
     private static DriverManagerDataSource isolated() {
         var root = new DriverManagerDataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
         String schema = "migration_" + UUID.randomUUID().toString().replace("-", "");

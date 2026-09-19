@@ -36,6 +36,7 @@ class SimulatorHttpIntegrationTest {
     @LocalServerPort int port;
     @Autowired ObjectMapper mapper;
     @Autowired JdbcTemplate jdbc;
+    @Autowired DeliveryStore deliveries;
     private final HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
 
     @DynamicPropertySource static void properties(DynamicPropertyRegistry registry) {
@@ -45,7 +46,7 @@ class SimulatorHttpIntegrationTest {
         registry.add("simulator.provider-api-key", () -> KEY);
     }
 
-    @BeforeEach void clean() { jdbc.execute("TRUNCATE provider_payment"); }
+    @BeforeEach void clean() { jdbc.execute("TRUNCATE provider_refund, provider_delivery, provider_payment"); }
 
     @Test void concurrentHttpDuplicatesHaveOneDurablePayloadAwareResult() throws Exception {
         UUID order = UUID.randomUUID();
@@ -113,6 +114,80 @@ class SimulatorHttpIntegrationTest {
                 "currency", "USD", "paymentMethod", "pm_approved", "callbackUrl", "http://localhost/unused"));
         assertEquals(400, post(order, callbackPayload, KEY).statusCode());
         assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM provider_payment", Integer.class));
+    }
+
+    @Test void durableLostPaymentResponsesAreRecoverableWithoutNewCharges() throws Exception {
+        for (String method : java.util.List.of("pm_lost_response", "pm_reconcile_declined")) {
+            UUID order = UUID.randomUUID();
+            assertEquals(503, post(order, body(order, 2500, method), KEY).statusCode());
+            assertEquals(503, post(order, body(order, 2500, method), KEY).statusCode());
+            var outcome = mapper.readTree(get("/provider/v1/payments/by-order/" + order, KEY).body());
+            assertEquals(method.equals("pm_lost_response") ? "AUTHORIZED" : "DECLINED", outcome.path("status").stringValue());
+        }
+        assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM provider_payment", Integer.class));
+        assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM provider_delivery", Integer.class));
+    }
+
+    @Test void refundScenariosHaveDurableIndependentIdempotencyAndNoSecondActiveRefund() throws Exception {
+        for (String method : java.util.List.of("pm_approved", "pm_refund_declined", "pm_refund_unknown", "pm_refund_lost")) {
+            UUID order = UUID.randomUUID(), refund = UUID.randomUUID();
+            var payment = mapper.readTree(post(order, body(order, 2500, method), KEY).body());
+            String payload = mapper.writeValueAsString(Map.of("refundId", refund, "paymentId", payment.path("id").stringValue(),
+                    "amountMinor", 2500, "currency", "USD"));
+            int first = method.equals("pm_refund_lost") ? 503 : 201;
+            assertEquals(first, refundPost(refund, payload).statusCode());
+            assertEquals(first == 503 ? 503 : 200, refundPost(refund, payload).statusCode());
+            var found = mapper.readTree(get("/provider/v1/refunds/" + refund, KEY).body());
+            String expected = method.equals("pm_refund_declined") ? "FAILED" : method.equals("pm_refund_unknown") ? "REVIEW_REQUIRED" : "SUCCEEDED";
+            assertEquals(expected, found.path("status").stringValue());
+            assertEquals(expected, new SimulatorRefunds(jdbc).get(refund).status());
+            assertEquals(409, refundPost(refund, payload.replace("2500", "2501")).statusCode());
+            UUID second = UUID.randomUUID();
+            assertEquals(expected.equals("FAILED") ? 201 : 409,
+                    refundPost(second, payload.replace(refund.toString(), second.toString())).statusCode());
+        }
+    }
+
+    @Test void callbackRetryUsesSameDurableEventAndFreshSignatureAndFencesExpiredWorkers() throws Exception {
+        UUID order = UUID.randomUUID(); post(order, body(order, 2500, "pm_approved"), KEY);
+        var first = deliveries.claim().orElseThrow();
+        assertTrue(deliveries.claim().isEmpty());
+        jdbc.execute("UPDATE provider_delivery SET lease_until = CURRENT_TIMESTAMP - INTERVAL '1 second'");
+        var second = deliveries.claim().orElseThrow();
+        deliveries.finish(first, true);
+        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM provider_delivery WHERE delivered_at IS NOT NULL", Integer.class));
+        deliveries.finish(second, false);
+        jdbc.execute("UPDATE provider_delivery SET next_attempt_at = CURRENT_TIMESTAMP");
+        var received = new java.util.concurrent.atomic.AtomicInteger();
+        var identity = new java.util.concurrent.atomic.AtomicReference<String>();
+        var server = com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/api/v1/webhooks/simulator", exchange -> {
+            try (exchange) {
+                byte[] bytes = exchange.getRequestBody().readAllBytes();
+                String signature = exchange.getRequestHeaders().getFirst("Simulator-Signature");
+                long timestamp = Long.parseLong(signature.split(",")[0].substring(2));
+                try { assertEquals(DeliveryWorker.signature(bytes, "fixture_signing", timestamp), signature); }
+                catch (java.security.GeneralSecurityException error) { throw new java.io.IOException(error); }
+                String id = mapper.readTree(bytes).path("id").stringValue();
+                if (identity.get() == null) identity.set(id); else assertEquals(identity.get(), id);
+                exchange.sendResponseHeaders(received.getAndIncrement() == 0 ? 503 : 204, -1);
+            }
+        }); server.start();
+        try {
+            String target = "http://127.0.0.1:" + server.getAddress().getPort() + "/api/v1/webhooks/simulator";
+            new DeliveryWorker(deliveries, mapper, target, "fixture_signing").runOnce();
+            assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM provider_delivery WHERE delivered_at IS NOT NULL", Integer.class));
+            jdbc.execute("UPDATE provider_delivery SET next_attempt_at = CURRENT_TIMESTAMP");
+            new DeliveryWorker(deliveries, mapper, target, "fixture_signing").runOnce();
+            assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM provider_delivery WHERE delivered_at IS NOT NULL", Integer.class));
+            assertEquals(2, received.get());
+        } finally { server.stop(0); }
+    }
+
+    private HttpResponse<String> refundPost(UUID key, String payload) throws Exception {
+        return client.send(HttpRequest.newBuilder(uri("/provider/v1/refunds")).timeout(Duration.ofSeconds(10))
+                .header("X-Provider-Key", KEY).header("Idempotency-Key", key.toString()).header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(payload)).build(), HttpResponse.BodyHandlers.ofString());
     }
 
     private String body(UUID order, long amount, String method) {

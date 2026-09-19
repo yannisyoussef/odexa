@@ -21,6 +21,7 @@ final class EdgeFilter extends OncePerRequestFilter {
     private static final Pattern UUID_TEXT = Pattern.compile("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}");
     private final Routes routes;
     private final TokenBucket bucket;
+    private final TokenBucket webhooks = new TokenBucket(100, 200, System::nanoTime);
     private final int maxRequest;
 
     EdgeFilter(Routes routes, @Value("${gateway.requests-per-second}") int rate,
@@ -50,7 +51,7 @@ final class EdgeFilter extends OncePerRequestFilter {
                 chain.doFilter(request, response);
                 return;
             }
-            if (!bucket.take()) {
+            if (!(Routes.webhook(request.getRequestURI()) ? webhooks : bucket).take()) {
                 response.setHeader("Retry-After", "1");
                 problem(response, 429, "RATE_LIMITED", "Request rate exceeded");
                 return;
@@ -59,7 +60,7 @@ final class EdgeFilter extends OncePerRequestFilter {
                 problem(response, 404, "NOT_FOUND", "Resource not found");
                 return;
             }
-            if (request.getContentLengthLong() > maxRequest) {
+            if (request.getContentLengthLong() > (Routes.webhook(request.getRequestURI()) ? 65536 : maxRequest)) {
                 problem(response, 413, "REQUEST_TOO_LARGE", "Request body exceeds edge limit");
                 return;
             }

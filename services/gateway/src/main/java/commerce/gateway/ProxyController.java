@@ -53,8 +53,9 @@ final class ProxyController {
             EdgeFilter.problem(response, 404, "NOT_FOUND", "Resource not found");
             return;
         }
-        byte[] body = request.getInputStream().readNBytes(maxRequest + 1);
-        if (body.length > maxRequest) {
+        int limit = Routes.webhook(request.getRequestURI()) ? 65536 : maxRequest;
+        byte[] body = request.getInputStream().readNBytes(limit + 1);
+        if (body.length > limit) {
             EdgeFilter.problem(response, 413, "REQUEST_TOO_LARGE", "Request body exceeds edge limit");
             return;
         }
@@ -69,6 +70,15 @@ final class ProxyController {
                 if (value != null) {
                     builder.header(name, value);
                 }
+            }
+            if (Routes.webhook(request.getRequestURI())) {
+                String signature = request.getRequestURI().endsWith("/stripe") ? "Stripe-Signature" : "Simulator-Signature";
+                var values = java.util.Collections.list(request.getHeaders(signature));
+                if (values.size() != 1 || values.getFirst().length() > 4096) {
+                    EdgeFilter.problem(response, 400, "INVALID_WEBHOOK", "Webhook verification failed");
+                    return;
+                }
+                builder.header(signature, values.getFirst());
             }
             builder.header(EdgeFilter.CORRELATION, (String) request.getAttribute(EdgeFilter.CORRELATION));
             // Host, Forwarded, X-Forwarded-*, cookies and hop-by-hop headers are deliberately not copied.

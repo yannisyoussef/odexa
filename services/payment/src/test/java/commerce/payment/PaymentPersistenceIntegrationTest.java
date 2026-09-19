@@ -42,13 +42,15 @@ import tools.jackson.databind.json.JsonMapper;
 class PaymentPersistenceIntegrationTest {
     @Container static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:17.6-alpine");
     @Autowired PaymentStore store;
+    @Autowired RefundStore refunds;
+    @Autowired ProviderEvents events;
     @Autowired ReservationConsumer consumer;
     @Autowired JdbcTemplate jdbc;
     @Autowired ObjectMapper mapper;
     @Autowired PlatformTransactionManager transactions;
     private final UUID tenant = UUID.randomUUID();
 
-    @BeforeEach void clean() { jdbc.execute("TRUNCATE payment, inbox, outbox"); }
+    @BeforeEach void clean() { jdbc.execute("TRUNCATE refund, provider_event, payment, inbox, outbox"); }
 
     @Test void concurrentDuplicateDeliveryCreatesExactlyOneInboxAndDurableJob() throws Exception {
         String raw = raw(UUID.randomUUID(), UUID.randomUUID(), 2500);
@@ -162,6 +164,118 @@ class PaymentPersistenceIntegrationTest {
         assertThrows(ApiException.class, () -> store.get(tenant, "customer-other-a", order));
     }
 
+    @Test void reviewIsDurableAndAuthoritativeLookupConvergesExactlyOnce() {
+        for (var outcome : java.util.List.of(PaymentProvider.Outcome.AUTHORIZED, PaymentProvider.Outcome.DECLINED)) {
+            clean();
+            UUID order = UUID.randomUUID();
+            consumer.receive(raw(UUID.randomUUID(), order, 2500));
+            var first = store.claim().orElseThrow();
+            store.complete(first, result(PaymentProvider.Outcome.REVIEW_REQUIRED));
+            makeDue();
+            var review = store.claim().orElseThrow();
+            assertTrue(review.reconciling());
+            assertFalse(store.complete(first, result(PaymentProvider.Outcome.DECLINED)));
+            assertFalse(store.complete(review, result(outcome)), "A changed provider reference is not valid evidence");
+            var authority = new PaymentProvider.Result(review.providerId(), outcome);
+            assertTrue(store.complete(review, authority));
+            assertFalse(store.complete(review, authority));
+            assertEquals(outcome.name(), store.get(tenant, "customer-a", order).status());
+            assertEquals(1, count("outbox"));
+        }
+    }
+
+    @Test void oldUnknownCommandNeverRepeatsAuthorizationAfterIdempotencyWindow() {
+        consumer.receive(raw(UUID.randomUUID(), UUID.randomUUID(), 2500));
+        jdbc.execute("UPDATE payment SET created_at = CURRENT_TIMESTAMP - INTERVAL '24 hours'");
+        assertTrue(store.claim().isEmpty());
+        makeDue();
+        assertTrue(store.claim().orElseThrow().reconciling());
+        assertEquals(0, jdbc.queryForObject("SELECT attempts FROM payment", Integer.class));
+    }
+
+    @Test void concurrentWebhookReplaySchedulesLookupOnceWithoutTrustingSnapshot() throws Exception {
+        UUID order = UUID.randomUUID();
+        consumer.receive(raw(UUID.randomUUID(), order, 2500));
+        var claim = store.claim().orElseThrow();
+        store.complete(claim, new PaymentProvider.Result("provider_reference", PaymentProvider.Outcome.REVIEW_REQUIRED));
+        concurrently(24, () -> { events.accept("simulator", "event1", "payment.updated", "provider_reference"); return true; });
+        assertEquals(1, count("provider_event"));
+        assertEquals("REVIEW_REQUIRED", store.get(tenant, "customer-a", order).status());
+        assertTrue(store.claim().orElseThrow().reconciling());
+        assertEquals(0, count("outbox"));
+        events.accept("stripe", "event1", "payment.updated", "provider_reference");
+        assertEquals(2, count("provider_event")); // Namespaces must not collide.
+    }
+
+    @Test void fullRefundConcurrentReplayConflictAndOwnership() throws Exception {
+        UUID order = authorized();
+        var merchant = merchant();
+        var results = concurrently(20, () -> refunds.create(merchant, order, "same-key", 2500, "USD"));
+        assertEquals(1, results.stream().filter(RefundStore.Created::initial).count());
+        assertEquals(1, count("refund"));
+        UUID id = results.getFirst().view().id();
+        assertEquals(409, assertThrows(ApiException.class, () -> refunds.create(merchant, order, "same-key", 2501, "USD")).status());
+        assertEquals(409, assertThrows(ApiException.class, () -> refunds.create(merchant, order, "other-key", 2500, "USD")).status());
+        var customer = new commerce.runtime.Actor(tenant, "customer-a", java.util.Set.of("CUSTOMER"));
+        assertEquals(id, refunds.get(customer, order, id, false).id());
+        assertEquals(403, assertThrows(ApiException.class, () -> refunds.create(customer, order, "x", 2500, "USD")).status());
+        assertEquals(404, assertThrows(ApiException.class, () -> refunds.get(
+                new commerce.runtime.Actor(UUID.randomUUID(), "merchant", java.util.Set.of("MERCHANT_ADMIN")), order, id, true)).status());
+        assertEquals(404, assertThrows(ApiException.class, () -> refunds.get(
+                new commerce.runtime.Actor(tenant, "other-owner", java.util.Set.of("CUSTOMER")), order, id, false)).status());
+    }
+
+    @Test void refundsCannotStartAgainstUncertainPaymentOrForPartialAmount() {
+        UUID order = UUID.randomUUID(); consumer.receive(raw(UUID.randomUUID(), order, 2500));
+        assertEquals(409, assertThrows(ApiException.class, () -> refunds.create(merchant(), order, "k", 2500, "USD")).status());
+        store.complete(store.claim().orElseThrow(), result(PaymentProvider.Outcome.AUTHORIZED));
+        assertEquals(409, assertThrows(ApiException.class, () -> refunds.create(merchant(), order, "k", 2499, "USD")).status());
+        assertEquals(0, count("refund"));
+    }
+
+    @Test void refundUncertaintyLeaseRecoveryAndOutboxRollback() {
+        UUID order = authorized();
+        var created = refunds.create(merchant(), order, "refund", 2500, "USD");
+        var stale = refunds.claim().orElseThrow();
+        jdbc.execute("UPDATE refund SET lease_until = CURRENT_TIMESTAMP - INTERVAL '1 second'");
+        var current = refunds.claim().orElseThrow();
+        assertEquals(stale.request(), current.request());
+        assertFalse(refunds.complete(stale, new PaymentProvider.RefundResult("refund_reference", PaymentProvider.RefundOutcome.FAILED)));
+        refunds.complete(current, new PaymentProvider.RefundResult("refund_reference", PaymentProvider.RefundOutcome.REVIEW_REQUIRED));
+        events.accept("simulator", "refund-event", "refund.updated", "refund_reference");
+        var reconcile = refunds.claim().orElseThrow();
+        assertTrue(reconcile.reconciling());
+        var result = new PaymentProvider.RefundResult("refund_reference", PaymentProvider.RefundOutcome.SUCCEEDED);
+        assertThrows(IllegalStateException.class, () -> new TransactionTemplate(transactions).executeWithoutResult(status -> {
+            refunds.complete(reconcile, result); throw new IllegalStateException("rollback");
+        }));
+        assertEquals("REVIEW_REQUIRED", refunds.get(merchant(), order, created.view().id(), true).status());
+        assertTrue(refunds.complete(reconcile, result));
+        assertFalse(refunds.complete(reconcile, result));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM outbox WHERE payload->>'eventType' = 'payment.refunded'", Integer.class));
+        assertEquals("AUTHORIZED", store.get(tenant, "customer-a", order).status());
+        assertEquals(409, assertThrows(ApiException.class, () -> refunds.create(merchant(), order, "again", 2500, "USD")).status());
+    }
+
+    @Test void onlyDefinitiveRefundFailureAllowsAnotherCommand() {
+        UUID order = authorized();
+        refunds.create(merchant(), order, "failed", 2500, "USD");
+        var first = refunds.claim().orElseThrow();
+        refunds.complete(first, new PaymentProvider.RefundResult("failed_refund", PaymentProvider.RefundOutcome.FAILED));
+        assertTrue(refunds.create(merchant(), order, "new", 2500, "USD").initial());
+        assertEquals(2, count("refund"));
+        assertEquals(2, refunds.list(merchant(), order, true, null).items().size());
+    }
+
+    private UUID authorized() {
+        UUID order = UUID.randomUUID(); consumer.receive(raw(UUID.randomUUID(), order, 2500));
+        store.complete(store.claim().orElseThrow(), result(PaymentProvider.Outcome.AUTHORIZED));
+        return order;
+    }
+    private commerce.runtime.Actor merchant() {
+        return new commerce.runtime.Actor(tenant, "merchant", java.util.Set.of("MERCHANT_ADMIN"));
+    }
+
     private void expireLease() {
         jdbc.execute("UPDATE payment SET lease_until = CURRENT_TIMESTAMP - INTERVAL '1 second'");
         makeDue();
@@ -205,6 +319,8 @@ class PaymentPersistenceIntegrationTest {
         @Bean ObjectMapper objectMapper() { return JsonMapper.builder().build(); }
         @Bean Outbox outbox(JdbcTemplate jdbc, ObjectMapper mapper) { return new Outbox(jdbc, mapper); }
         @Bean Inbox inbox(JdbcTemplate jdbc) { return new Inbox(jdbc); }
+        @Bean RefundStore refunds(JdbcTemplate jdbc, Outbox outbox, RetryPolicy policy) { return new RefundStore(jdbc, outbox, policy); }
+        @Bean ProviderEvents events(JdbcTemplate jdbc) { return new ProviderEvents(jdbc); }
         @Bean RetryPolicy retryPolicy() { return new RetryPolicy(3, 10, 1, 4); }
         @Bean PaymentStore store(JdbcTemplate jdbc, Outbox outbox, RetryPolicy policy) { return new PaymentStore(jdbc, outbox, policy); }
         @Bean ReservationConsumer consumer(ObjectMapper mapper, Inbox inbox, PaymentStore store) {

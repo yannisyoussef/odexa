@@ -95,6 +95,43 @@ class GatewayTest {
     }
 
     @Test
+    void webhookBytesAndOnlyMatchingSignatureCrossTheEdgeWithIndependentBodyBound() throws Exception {
+        byte[] body = "{ \"id\": \"evt_fixture\" }".replace("\\", "").getBytes(StandardCharsets.UTF_8);
+        var actual = new AtomicReference<byte[]>();
+        var signature = new AtomicReference<String>();
+        var other = new AtomicReference<String>();
+        server.createContext("/api/v1/webhooks/stripe", exchange -> {
+            try (exchange) {
+                actual.set(exchange.getRequestBody().readAllBytes());
+                signature.set(exchange.getRequestHeaders().getFirst("Stripe-Signature"));
+                other.set(exchange.getRequestHeaders().getFirst("Simulator-Signature"));
+                exchange.sendResponseHeaders(204, -1);
+            }
+        });
+        mvc.perform(post("/api/v1/webhooks/stripe").content(body).header("Stripe-Signature", "t=123,v1=fixture")
+                .header("Simulator-Signature", "unrelated")).andExpect(status().isNoContent());
+        assertArrayEquals(body, actual.get()); assertEquals("t=123,v1=fixture", signature.get()); assertNull(other.get());
+        mvc.perform(post("/api/v1/webhooks/stripe").content(new byte[65537])
+                .header("Stripe-Signature", "fixture")).andExpect(status().is(413));
+        mvc.perform(post("/api/v1/webhooks/stripe").content(body).header("Stripe-Signature", "one", "two"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(post("/api/v1/webhooks/other")).andExpect(status().isNotFound());
+        mvc.perform(get("/api/v1/webhooks/stripe")).andExpect(status().isNotFound());
+    }
+
+    @Test
+    void onlyExplicitMerchantRefundCommandAndVisibleReadRoutesAreForwarded() throws Exception {
+        mvc.perform(post("/api/v1/merchant/payments/" + ID + "/refunds").content("{}"))
+                .andExpect(status().isCreated());
+        for (String prefix : List.of("", "merchant/")) {
+            mvc.perform(get("/api/v1/" + prefix + "payments/" + ID + "/refunds")).andExpect(status().isCreated());
+            mvc.perform(get("/api/v1/" + prefix + "payments/" + ID + "/refunds/" + ID)).andExpect(status().isCreated());
+        }
+        mvc.perform(post("/api/v1/payments/" + ID + "/refunds")).andExpect(status().isNotFound());
+        mvc.perform(post("/api/v1/merchant/payments/" + ID + "/refunds/" + ID)).andExpect(status().isNotFound());
+    }
+
+    @Test
     void rejectsAdministrativeAndUnlistedRoutesWithoutContactingBackend() throws Exception {
         for (String path : List.of("/actuator/env", "/actuator", "/api/v1/provider/payments", "/api/v1/products/garbage")) {
             mvc.perform(get(path)).andExpect(status().isNotFound());

@@ -3,87 +3,618 @@
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "info": {
     "title": "Odexa Payment Simulator Provider API",
-    "version": "1.0.0",
-    "description": "Internal sandbox provider, with its own database and API-key authentication; not a public checkout API. pm_approved deterministically authorizes and pm_declined deterministically declines. Results and semantic idempotency survive application restarts and concurrent replicas. No callback URLs, webhook registration, control endpoints or artificial failure endpoints are supported. Real Stripe integration is deferred per the initial implementation brief."
+    "version": "1.1.0",
+    "description": "Independent durable sandbox provider. Commands are payload-aware and idempotent across replicas/restarts. Authenticated lookups recover lost responses. Fixed configured signed callbacks retry durably; callers cannot supply callback URLs. No test-control endpoints or real card inputs."
   },
-  "servers": [{"url": "http://localhost:8085", "description": "Local internal provider"}],
-  "security": [{"providerKey": []}],
-  "tags": [{"name": "Provider payments"}],
+  "servers": [
+    {
+      "url": "http://localhost:8085",
+      "description": "Local internal provider"
+    }
+  ],
+  "security": [
+    {
+      "providerKey": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "Provider payments"
+    }
+  ],
   "paths": {
     "/provider/v1/payments": {
       "post": {
         "operationId": "createSimulatorPayment",
-        "tags": ["Provider payments"],
+        "tags": [
+          "Provider payments"
+        ],
         "summary": "Process a sandbox payment idempotently",
-        "description": "Idempotency-Key must be the same UUID as body.orderId. The database uniquely stores that order UUID with amountMinor, currency and paymentMethod. An exact semantic retry returns the original result; a changed valid payload under the same key returns 409. Invalid or unsupported payloads return 400. A timeout is not a decline: callers must retry with the same order UUID.",
-        "parameters": [{"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "format": "uuid", "minLength": 36, "maxLength": 36}, "description": "Order UUID, matching body.orderId"}],
-        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PaymentRequest"}}}},
+        "description": "Idempotency-Key must be the same UUID as body.orderId. The database uniquely stores that order UUID with amountMinor, currency and paymentMethod. An exact semantic retry returns the original result; a changed valid payload under the same key returns 409. Invalid or unsupported payloads return 400. A timeout is not a decline: callers must retry with the same order UUID. pm_lost_response and pm_reconcile_declined commit success/decline respectively then return 503 on every command attempt; lookup resolves them. pm_unknown remains indeterminate. Other pm_refund_* references authorize and select refund behavior.",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "minLength": 36,
+              "maxLength": 36
+            },
+            "description": "Order UUID, matching body.orderId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PaymentRequest"
+              }
+            }
+          }
+        },
         "responses": {
-          "201": {"description": "New durable payment outcome", "headers": {"Location": {"schema": {"type": "string", "format": "uri-reference"}, "description": "Provider payment lookup URI"}, "Cache-Control": {"schema": {"type": "string", "const": "no-store"}}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PaymentResult"}}}},
-          "200": {"description": "Exact idempotent replay of existing outcome", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PaymentResult"}}}},
-          "400": {"$ref": "#/components/responses/BadRequest"},
-          "401": {"$ref": "#/components/responses/Unauthorized"},
-          "409": {"$ref": "#/components/responses/Conflict"},
-          "415": {"$ref": "#/components/responses/UnsupportedMediaType"},
-          "500": {"$ref": "#/components/responses/InternalError"}
+          "201": {
+            "description": "New durable payment outcome",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string",
+                  "format": "uri-reference"
+                },
+                "description": "Provider payment lookup URI"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentResult"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Exact idempotent replay of existing outcome",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "description": "Command response unavailable; outcome may have committed. Retry only with the same key or lookup."
+          }
         }
       }
     },
     "/provider/v1/payments/{id}": {
       "get": {
         "operationId": "getSimulatorPayment",
-        "tags": ["Provider payments"],
+        "tags": [
+          "Provider payments"
+        ],
         "summary": "Read a durable sandbox outcome by provider payment UUID",
-        "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
         "responses": {
-          "200": {"description": "Durable payment outcome", "headers": {"Cache-Control": {"schema": {"type": "string", "const": "no-store"}}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PaymentResult"}}}},
-          "400": {"$ref": "#/components/responses/BadRequest"},
-          "401": {"$ref": "#/components/responses/Unauthorized"},
-          "404": {"$ref": "#/components/responses/NotFound"},
-          "500": {"$ref": "#/components/responses/InternalError"}
+          "200": {
+            "description": "Durable payment outcome",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/provider/v1/payments/by-order/{orderId}": {
+      "get": {
+        "operationId": "lookupSimulatorPaymentByOrder",
+        "tags": [
+          "Provider payments"
+        ],
+        "summary": "Read a durable sandbox outcome by provider payment UUID",
+        "parameters": [
+          {
+            "name": "orderId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Durable payment outcome",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/provider/v1/refunds": {
+      "post": {
+        "operationId": "createSimulatorRefund",
+        "tags": [
+          "Provider payments"
+        ],
+        "summary": "Create a full refund",
+        "description": "Key equals body.refundId. Same key/semantic payload replays; conflicting payload or another active full refund returns 409. pm_refund_declined yields FAILED, pm_refund_unknown yields REVIEW_REQUIRED, pm_refund_lost durably succeeds but every command response is 503; lookup returns the durable outcome.",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "minLength": 36,
+              "maxLength": 36
+            },
+            "description": "Refund command UUID, matching body.refundId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefundRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "New durable payment outcome",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string",
+                  "format": "uri-reference"
+                },
+                "description": "Provider payment lookup URI"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefundResult"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Exact idempotent replay of existing outcome",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefundResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "description": "Command response unavailable; outcome may have committed. Retry only with the same key or lookup."
+          }
+        }
+      }
+    },
+    "/provider/v1/refunds/{refundId}": {
+      "get": {
+        "operationId": "getSimulatorRefund",
+        "tags": [
+          "Provider payments"
+        ],
+        "summary": "Lookup by refund command UUID",
+        "parameters": [
+          {
+            "name": "refundId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Durable payment outcome",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefundResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
         }
       }
     }
   },
   "components": {
-    "securitySchemes": {"providerKey": {"type": "apiKey", "in": "header", "name": "X-Provider-Key", "description": "Required secret configured through PROVIDER_API_KEY in both payment applications. Never include it in URLs or logs."}},
+    "securitySchemes": {
+      "providerKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Provider-Key",
+        "description": "Required secret configured through PROVIDER_API_KEY in both payment applications. Never include it in URLs or logs."
+      }
+    },
     "schemas": {
       "PaymentRequest": {
-        "type": "object", "additionalProperties": false,
-        "required": ["orderId", "amountMinor", "currency", "paymentMethod"],
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "orderId",
+          "amountMinor",
+          "currency",
+          "paymentMethod"
+        ],
         "properties": {
-          "orderId": {"type": "string", "format": "uuid"},
-          "amountMinor": {"type": "integer", "format": "int64", "minimum": 1, "maximum": 9223372036854775807},
-          "currency": {"type": "string", "const": "USD"},
-          "paymentMethod": {"type": "string", "enum": ["pm_approved", "pm_declined"], "description": "Documented deterministic sandbox references, not real card data"}
+          "orderId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "amountMinor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1,
+            "maximum": 9223372036854775807
+          },
+          "currency": {
+            "type": "string",
+            "const": "USD"
+          },
+          "paymentMethod": {
+            "type": "string",
+            "enum": [
+              "pm_approved",
+              "pm_declined",
+              "pm_lost_response",
+              "pm_unknown",
+              "pm_reconcile_declined",
+              "pm_refund_declined",
+              "pm_refund_unknown",
+              "pm_refund_lost"
+            ],
+            "description": "Documented deterministic sandbox references, not real card data"
+          }
         }
       },
       "PaymentResult": {
-        "type": "object", "additionalProperties": false, "required": ["id", "status"],
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "status",
+          "orderId",
+          "amountMinor",
+          "currency"
+        ],
         "properties": {
-          "id": {"type": "string", "format": "uuid"},
-          "status": {"type": "string", "enum": ["AUTHORIZED", "DECLINED"]}
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "AUTHORIZED",
+              "DECLINED",
+              "REVIEW_REQUIRED"
+            ]
+          },
+          "orderId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "amountMinor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1,
+            "maximum": 9223372036854775807
+          },
+          "currency": {
+            "type": "string",
+            "const": "USD"
+          }
         }
       },
       "Problem": {
-        "type": "object", "required": ["type", "title", "status", "detail", "code"],
+        "type": "object",
+        "required": [
+          "type",
+          "title",
+          "status",
+          "detail",
+          "code"
+        ],
         "properties": {
-          "type": {"type": "string", "format": "uri"},
-          "title": {"type": "string"},
-          "status": {"type": "integer", "minimum": 400, "maximum": 599},
-          "detail": {"type": "string"},
-          "instance": {"type": "string", "format": "uri-reference"},
-          "code": {"type": "string"}
+          "type": {
+            "type": "string",
+            "format": "uri"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "minimum": 400,
+            "maximum": 599
+          },
+          "detail": {
+            "type": "string"
+          },
+          "instance": {
+            "type": "string",
+            "format": "uri-reference"
+          },
+          "code": {
+            "type": "string"
+          }
+        }
+      },
+      "RefundRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "refundId",
+          "paymentId",
+          "amountMinor",
+          "currency"
+        ],
+        "properties": {
+          "refundId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "paymentId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "amountMinor": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9223372036854775807
+          },
+          "currency": {
+            "type": "string",
+            "const": "USD"
+          }
+        }
+      },
+      "RefundResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "refundId",
+          "paymentId",
+          "amountMinor",
+          "currency",
+          "status"
+        ],
+        "properties": {
+          "refundId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "paymentId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "amountMinor": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9223372036854775807
+          },
+          "currency": {
+            "type": "string",
+            "const": "USD"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "SUCCEEDED",
+              "FAILED",
+              "REVIEW_REQUIRED"
+            ]
+          }
         }
       }
     },
     "responses": {
-      "BadRequest": {"description": "Missing or malformed header/body/UUID, unsupported sandbox reference or currency, invalid amount, unknown body property, or key does not match orderId", "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
-      "Unauthorized": {"description": "Missing, repeated or incorrect X-Provider-Key", "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
-      "Conflict": {"description": "Idempotency key already belongs to a different semantic payment payload", "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
-      "NotFound": {"description": "Unknown provider payment UUID", "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
-      "UnsupportedMediaType": {"description": "Request body must use application/json", "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
-      "InternalError": {"description": "Sanitized provider failure; this response is not an authoritative decline", "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}}
+      "BadRequest": {
+        "description": "Missing or malformed header/body/UUID, unsupported sandbox reference or currency, invalid amount, unknown body property, or key does not match orderId",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "Missing, repeated or incorrect X-Provider-Key",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "Conflict": {
+        "description": "Idempotency key already belongs to a different semantic payment payload",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Unknown provider payment UUID",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "UnsupportedMediaType": {
+        "description": "Request body must use application/json",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "Sanitized provider failure; this response is not an authoritative decline",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      }
     }
   }
 }
