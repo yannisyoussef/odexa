@@ -45,22 +45,26 @@ public class Outbox {
 
     /** Withdraw only when the durable publisher fence proves no send has ever started. */
     @Transactional(propagation = Propagation.MANDATORY)
-    public Optional<UUID> withdrawUnattempted(String eventType, UUID tenantId, String aggregateId) {
+    public Optional<Withdrawn> withdrawUnattempted(String eventType, UUID tenantId, String aggregateId) {
         JdbcTransactions.requireWritable(jdbc);
+        // Only unpublished rows are indexed and relevant. A row locked by a publisher is being
+        // fenced or sent, so it is skipped rather than awaited and reads as already attempted.
         var rows = jdbc.query("""
-                SELECT event_id, dispatch_started_at, published_at FROM outbox
-                WHERE tenant_id = ? AND aggregate_id = ? AND payload->>'eventType' = ?
-                ORDER BY sequence FOR UPDATE
-                """, (row, index) -> new Dispatch(row.getObject("event_id", UUID.class),
-                        row.getTimestamp("dispatch_started_at") != null || row.getTimestamp("published_at") != null),
-                tenantId, aggregateId, eventType);
+                SELECT event_id, dispatch_started_at, payload->>'correlationId' AS correlation_id FROM outbox
+                WHERE published_at IS NULL AND aggregate_id = ? AND tenant_id = ? AND payload->>'eventType' = ?
+                ORDER BY sequence FOR UPDATE SKIP LOCKED
+                """, (row, index) -> new Dispatch(new Withdrawn(row.getObject("event_id", UUID.class),
+                        row.getString("correlation_id")), row.getTimestamp("dispatch_started_at") != null),
+                aggregateId, tenantId, eventType);
         if (rows.size() != 1 || rows.getFirst().attempted()) {
             return Optional.empty();
         }
-        UUID id = rows.getFirst().id();
-        jdbc.update("DELETE FROM outbox WHERE event_id = ?", id);
-        return Optional.of(id);
+        Withdrawn withdrawn = rows.getFirst().event();
+        jdbc.update("DELETE FROM outbox WHERE event_id = ?", withdrawn.eventId());
+        return Optional.of(withdrawn);
     }
 
-    private record Dispatch(UUID id, boolean attempted) { }
+    public record Withdrawn(UUID eventId, String correlationId) { }
+
+    private record Dispatch(Withdrawn event, boolean attempted) { }
 }

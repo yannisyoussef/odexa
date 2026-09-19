@@ -1,7 +1,6 @@
-#!/usr/bin/env bash
-# Invoked only on an empty PostgreSQL volume. Passwords stay in the environment/psql session, never argv.
-set -euo pipefail
-psql --username "$POSTGRES_USER" --dbname postgres --set ON_ERROR_STOP=1 <<'SQL'
+-- Run by the official entrypoint's psql (ON_ERROR_STOP) only on an empty PostgreSQL volume.
+-- Plain SQL needs no execute permission on the host mount. Passwords are read from the
+-- environment inside the psql session and never appear in argv.
 \getenv catalog_password CATALOG_DB_PASSWORD
 \getenv inventory_password INVENTORY_DB_PASSWORD
 \getenv order_password ORDER_DB_PASSWORD
@@ -28,4 +27,3 @@ REVOKE ALL ON DATABASE simulator FROM PUBLIC;
 REVOKE ALL ON DATABASE keycloak FROM PUBLIC;
 REVOKE ALL ON DATABASE postgres FROM PUBLIC;
 REVOKE ALL ON DATABASE template1 FROM PUBLIC;
-SQL

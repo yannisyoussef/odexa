@@ -7,6 +7,8 @@ import commerce.runtime.Outbox;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -14,6 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class OrderLifecycle {
+    private static final Logger LOG = LoggerFactory.getLogger(OrderLifecycle.class);
     private final OrderRepository orders;
     private final Outbox outbox;
     private final Clock clock;
@@ -33,12 +36,13 @@ public class OrderLifecycle {
     @Transactional
     public Order cancel(Actor actor, UUID id) {
         CheckoutService.authorize(actor);
-        Order before = orders.lock(actor.tenantId(), id).filter(order -> order.customerId().equals(actor.subject()))
+        Order before = orders.lockOwned(actor.tenantId(), actor.subject(), id)
                 .orElseThrow(() -> new ApiException(404, "ORDER_NOT_FOUND", "Order not found"));
         if (before.status() == OrderStatus.CANCELLED) return before;
         Order after = before.stopBeforeDispatch(OrderStatus.CANCELLED);
         UUID cause = outbox.withdrawUnattempted("order.created", before.tenantId(), id.toString())
-                .orElseThrow(() -> new ApiException(409, "ORDER_NOT_CANCELLABLE", "Order can no longer be cancelled"));
+                .orElseThrow(() -> new ApiException(409, "ORDER_NOT_CANCELLABLE", "Order can no longer be cancelled"))
+                .eventId();
         finish(after, "CUSTOMER_CANCELLED", "order.cancelled", cause);
         return after;
     }
@@ -48,13 +52,12 @@ public class OrderLifecycle {
     public int expireBatch() {
         int expired = 0;
         for (Order before : orders.lockStaleUndispatched(clock.instant().minus(staleAfter), 25)) {
-            String correlation = orders.checkoutCorrelation(before.tenantId(), before.id());
             var cause = outbox.withdrawUnattempted("order.created", before.tenantId(), before.id().toString());
             if (cause.isEmpty()) continue; // Publisher committed its fence after candidate selection.
             String previous = MDC.get(Correlation.MDC_KEY);
-            MDC.put(Correlation.MDC_KEY, correlation);
+            MDC.put(Correlation.MDC_KEY, cause.get().correlationId());
             try {
-                finish(before.stopBeforeDispatch(OrderStatus.EXPIRED), "DISPATCH_EXPIRED", "order.expired", cause.get());
+                finish(before.stopBeforeDispatch(OrderStatus.EXPIRED), "DISPATCH_EXPIRED", "order.expired", cause.get().eventId());
                 expired++;
             } finally {
                 if (previous == null) MDC.remove(Correlation.MDC_KEY);
@@ -65,6 +68,7 @@ public class OrderLifecycle {
     }
 
     private void finish(Order after, String reason, String type, UUID cause) {
+        LOG.info("Order closed before dispatch; orderId={} status={} reason={}", after.id(), after.status(), reason);
         orders.save(after);
         orders.recordHistory(after, clock.instant(), reason);
         outbox.append(type, after.tenantId(), after.id().toString(), new Stopped(after.id(), reason), cause);

@@ -169,12 +169,12 @@ class OrderHttpTest {
         mvc.perform(post(path).with(customer()).contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"CANCELLED\"}"))
                 .andExpect(status().isBadRequest());
         mvc.perform(post(path).with(customer()).param("customerId", "other")).andExpect(status().isBadRequest());
-        when(orders.lock(order.tenantId(), order.id())).thenReturn(Optional.of(order));
+        when(orders.lockOwned(order.tenantId(), order.customerId(), order.id())).thenReturn(Optional.of(order));
         mvc.perform(post(path).with(actor(order.tenantId(), "other", "CUSTOMER"))).andExpect(status().isNotFound());
         mvc.perform(post(path).with(customer())).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("ORDER_NOT_CANCELLABLE"));
-        when(outbox.withdrawUnattempted("order.created", order.tenantId(), order.id().toString())).thenReturn(Optional.of(UUID.randomUUID()));
+        when(outbox.withdrawUnattempted("order.created", order.tenantId(), order.id().toString())).thenReturn(Optional.of(new commerce.runtime.Outbox.Withdrawn(UUID.randomUUID(), "checkout-correlation")));
         mvc.perform(post(path).with(customer())).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("CANCELLED"));
-        when(orders.lock(order.tenantId(), order.id())).thenReturn(Optional.of(order.stopBeforeDispatch(OrderStatus.CANCELLED)));
+        when(orders.lockOwned(order.tenantId(), order.customerId(), order.id())).thenReturn(Optional.of(order.stopBeforeDispatch(OrderStatus.CANCELLED)));
         clearInvocations(outbox);
         mvc.perform(post(path).with(customer())).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("CANCELLED"));
         verifyNoInteractions(outbox);

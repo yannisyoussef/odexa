@@ -8,7 +8,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.kafka.clients.admin.AdminClient;
@@ -62,8 +64,29 @@ class KafkaRuntimeIntegrationTest {
     @BeforeAll
     static void initializeBroker() throws Exception {
         try (var admin = AdminClient.create(Map.of(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers()))) {
-            admin.createTopics(List.of(CONFIGURATION.commerceEventsTopic(3, 1),
-                    CONFIGURATION.commerceEventsDeadLetterTopic(3, 1))).all().get(30, TimeUnit.SECONDS);
+            // A started container is not yet a controller able to create topics, and a timed-out
+            // request may still have succeeded. Converge on the required topics within one deadline.
+            var topics = List.of(CONFIGURATION.commerceEventsTopic(3, 1), CONFIGURATION.commerceEventsDeadLetterTopic(3, 1));
+            var names = topics.stream().map(topic -> topic.name()).toList();
+            long deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(3);
+            while (true) {
+                try {
+                    var missing = new ArrayList<>(topics);
+                    var existing = admin.listTopics().names().get(20, TimeUnit.SECONDS);
+                    missing.removeIf(topic -> existing.contains(topic.name()));
+                    if (!missing.isEmpty()) {
+                        admin.createTopics(missing).all().get(20, TimeUnit.SECONDS);
+                    }
+                    var described = admin.describeTopics(names).allTopicNames().get(20, TimeUnit.SECONDS);
+                    assertThat(described.values()).allSatisfy(topic -> assertThat(topic.partitions()).hasSize(3));
+                    break;
+                } catch (ExecutionException | TimeoutException notReady) {
+                    if (System.nanoTime() > deadline) {
+                        throw new IllegalStateException("Kafka did not provide the required topics: " + KAFKA.getLogs(), notReady);
+                    }
+                    TimeUnit.MILLISECONDS.sleep(500); // Pace bootstrap polling only; no assertion depends on it.
+                }
+            }
         }
         Map<String, Object> properties = new HashMap<>();
         properties.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers());

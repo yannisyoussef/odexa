@@ -7,6 +7,8 @@ import commerce.runtime.Inbox;
 import commerce.runtime.Outbox;
 import java.util.UUID;
 import java.time.Clock;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
@@ -16,6 +18,7 @@ import tools.jackson.databind.ObjectMapper;
 @Component
 public class OrderEventConsumer {
     static final String CONSUMER = "order-state-v1";
+    private static final Logger LOG = LoggerFactory.getLogger(OrderEventConsumer.class);
     private final ObjectMapper mapper;
     private final Inbox inbox;
     private final Outbox outbox;
@@ -52,6 +55,12 @@ public class OrderEventConsumer {
             }
             Order before = orders.lock(event.tenantId(), decoded.orderId())
                     .orElseThrow(() -> new ApiException(409, "ORDER_EVENT_NOT_FOUND", "Event order does not exist in tenant"));
+            if (before.status() == OrderStatus.CANCELLED || before.status() == OrderStatus.EXPIRED) {
+                // The withdrawn checkout was never sent by this publisher, so downstream work for it
+                // means a publisher without the dispatch fence ran. The order stays closed; operators must reconcile.
+                LOG.error("Downstream fact for an order closed before dispatch; orderId={} status={} eventType={} eventId={}",
+                        before.id(), before.status(), event.eventType(), event.eventId());
+            }
             Order after = switch (event.eventType()) {
                 case "inventory.reserved" -> {
                     if (!decoded.reservation().matches(before)) {

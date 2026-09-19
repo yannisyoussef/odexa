@@ -48,7 +48,8 @@ or deployment configuration. No credential values need to be printed or placed o
 line. Alternatively use the Flyway `baseline` command at version 1 with securely supplied
 service-specific connection settings, then start the normal application to migrate.
 
-The dispatch-fence migration conservatively marks every preexisting outbox event as attempted.
+The dispatch-fence migration conservatively marks every preexisting unpublished outbox event
+as attempted; published rows are never consulted by the fence and are left untouched.
 It does not delete pending messages or change their payloads. The order history migration
 preserves legacy state and adds a `LEGACY_SNAPSHOT` at migration time, rather than inventing
 missing historical transition times. Existing orders and idempotency keys remain readable.

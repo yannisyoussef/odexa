@@ -252,7 +252,8 @@ class OrderDatabaseIntegrationTest {
         OrderPage first = queries.list(customer, false, query);
         assertEquals(20, first.items().size());
         assertEquals(new UUID(0, 125), first.items().getFirst().id());
-        writer.create(Order.create(UUID.randomUUID(), tenant, "alice", snapshot, time.plusSeconds(1)), "newer", fingerprint(snapshot));
+        // Matches every filter and sorts ahead of page one: offset paging would shift and repeat a row.
+        Order newer = writer.create(Order.create(new UUID(1, 0), tenant, "alice", snapshot, time), "newer", fingerprint(snapshot)).order();
         var seen = new java.util.HashSet<UUID>();
         first.items().forEach(order -> assertTrue(seen.add(order.id())));
         String cursor = first.nextCursor();
@@ -263,6 +264,8 @@ class OrderDatabaseIntegrationTest {
             cursor = page.nextCursor();
         }
         assertEquals(125, seen.size());
+        assertFalse(seen.contains(newer.id()));
+        assertEquals(newer.id(), queries.list(customer, false, query).items().getFirst().id());
         assertFalse(seen.contains(hiddenOwner.id()));
         assertFalse(seen.contains(hiddenTenant.id()));
         assertEquals(hiddenOwner, queries.get(merchant, true, hiddenOwner.id()));
@@ -402,6 +405,43 @@ class OrderDatabaseIntegrationTest {
                 assertEquals(owned(order).status() != OrderStatus.EXPIRED, checkoutSent);
             }
         }
+    }
+
+    @Test
+    void anotherCustomerOrTenantCannotCancelOrDisturbACancellableOrder() {
+        Order order = persist();
+        var sameTenantStranger = new commerce.runtime.Actor(order.tenantId(), "mallory", java.util.Set.of("CUSTOMER"));
+        var otherTenantNamesake = new commerce.runtime.Actor(UUID.randomUUID(), order.customerId(), java.util.Set.of("CUSTOMER"));
+        for (var intruder : List.of(sameTenantStranger, otherTenantNamesake)) {
+            ApiException hidden = assertThrows(ApiException.class, () -> lifecycle.cancel(intruder, order.id()));
+            assertEquals(404, hidden.status());
+            assertEquals("ORDER_NOT_FOUND", hidden.code());
+        }
+        assertEquals(OrderStatus.CREATED, owned(order).status());
+        assertEquals(1, orders.history(order.id()).size());
+        assertEquals("order.created", jdbc.queryForObject("SELECT payload->>'eventType' FROM outbox", String.class));
+        assertEquals(OrderStatus.CANCELLED, lifecycle.cancel(customer(order), order.id()).status());
+    }
+
+    @Test
+    void expiryDrainsABacklogLargerThanOneBatchAcrossPollsWithTheCheckoutCorrelation() {
+        CheckoutSnapshot snapshot = OrderStateMachineTest.created().snapshot();
+        UUID tenant = UUID.randomUUID();
+        Instant created = Instant.parse("2026-09-01T00:00:00Z");
+        for (int i = 1; i <= 30; i++) {
+            writer.create(Order.create(new UUID(0, i), tenant, "alice", snapshot, created), "stale-" + i, fingerprint(snapshot));
+        }
+        var checkoutCorrelations = jdbc.queryForList("SELECT aggregate_id || '=' || (payload->>'correlationId') FROM outbox ORDER BY 1", String.class);
+        var transaction = new TransactionTemplate(transactionManager);
+        var worker = expiryAt(created.plusSeconds(1800));
+        assertEquals(25, transaction.<Integer>execute(status -> worker.expireBatch()));
+        assertEquals(5, transaction.<Integer>execute(status -> worker.expireBatch()));
+        assertEquals(0, transaction.<Integer>execute(status -> worker.expireBatch()));
+        assertEquals(30, jdbc.queryForObject("SELECT count(*) FROM customer_order WHERE status = 'EXPIRED'", Integer.class));
+        assertEquals(30, jdbc.queryForObject("SELECT count(*) FROM outbox WHERE payload->>'eventType' = 'order.expired'", Integer.class));
+        assertEquals(30, count("outbox"));
+        assertEquals(30, new java.util.HashSet<>(checkoutCorrelations).size());
+        assertEquals(checkoutCorrelations, jdbc.queryForList("SELECT aggregate_id || '=' || (payload->>'correlationId') FROM outbox ORDER BY 1", String.class));
     }
 
     @Test

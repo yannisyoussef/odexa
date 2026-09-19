@@ -38,6 +38,11 @@ public class OrderRepository {
                 (rs, row) -> map(rs), tenantId, id).stream().findFirst();
     }
 
+    public Optional<Order> lockOwned(UUID tenantId, String customerId, UUID id) {
+        return jdbc.query("SELECT * FROM customer_order WHERE tenant_id = ? AND customer_id = ? AND id = ? FOR UPDATE",
+                (rs, row) -> map(rs), tenantId, customerId, id).stream().findFirst();
+    }
+
     public Optional<Order> findTenant(UUID tenantId, UUID id) {
         return jdbc.query("SELECT * FROM customer_order WHERE tenant_id = ? AND id = ?",
                 (rs, row) -> map(rs), tenantId, id).stream().findFirst();
@@ -85,13 +90,6 @@ public class OrderRepository {
                     AND o.published_at IS NULL AND o.dispatch_started_at IS NULL)
                 ORDER BY c.created_at, c.id LIMIT ? FOR UPDATE OF c SKIP LOCKED
                 """, (rs, row) -> map(rs), Timestamp.from(before.truncatedTo(java.time.temporal.ChronoUnit.MICROS)), limit);
-    }
-
-    public String checkoutCorrelation(UUID tenant, UUID id) {
-        return jdbc.queryForObject("""
-                SELECT payload->>'correlationId' FROM outbox WHERE tenant_id = ? AND aggregate_id = ?
-                    AND payload->>'eventType' = 'order.created'
-                """, String.class, tenant, id.toString());
     }
 
     /** PostgreSQL waits for a concurrent winner without aborting this transaction on conflict. */

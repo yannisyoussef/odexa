@@ -47,8 +47,13 @@ exposing JWT subjects, profiles or provider references. Both paths support `/{id
 Collections accept `limit` (1–100, default 20), opaque `cursor`, exact `status`, inclusive
 `createdFrom` and exclusive `createdBefore`. Ordering is descending creation time, then UUID;
 newer inserts cannot shift continuation pages. Keep filters unchanged while paging. Status
-filters are live views; there is no multi-request snapshot. Unknown/repeated parameters,
-including customer/tenant overrides, fail with coded 400 problems.
+filters are live views; there is no multi-request snapshot. Unknown/repeated collection
+parameters, including customer/tenant overrides, fail with coded 400 problems. Detail and history
+reads take no parameters and ignore any that are sent; scope always comes from the token.
+
+Existing operations and fields are unchanged. The `status` vocabulary gained `CANCELLED` and
+`EXPIRED`, and `EXPIRED` can appear on an order placed by an unchanged v0.1.0 client, so clients
+must treat an unrecognized status as a closed order rather than fail.
 
 History records version, state, local transition time and a stable reason. State, history and
 outbox commit atomically. Deferred reservation/payment resolution records both transitions.
@@ -72,7 +77,10 @@ is bounded to 25; multiple instances skip locked orders. Time comes from an inje
 This threshold makes work eligible for expiry, not a guaranteed inventory-decision deadline.
 If the publisher wins, the order continues normally. Dispatched CREATED orders, reserved orders,
 and REVIEW_REQUIRED payments are never expired. Recovery of missing decisions remains operational
-replay/reconciliation work. `runtime.outbox.enabled=false` can suspend publication for maintenance.
+replay/reconciliation work. `runtime.outbox.enabled=false` suspends publication for maintenance;
+because nothing is then dispatched, also set `order.lifecycle.worker-enabled=false` unless accepted
+checkouts older than the threshold are meant to expire during the pause. While the broker is
+unavailable each publisher instance fences at most one batch, so later checkouts stay cancellable and expirable.
 
 See the [full transition table](../../docs/adr/003-order-lifecycle-and-queries.md) and
 [migration/rollout procedure](../../docs/database-migrations.md). New facts are `order.cancelled`,

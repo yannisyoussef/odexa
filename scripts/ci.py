@@ -58,7 +58,8 @@ def main():
     args = parser.parse_args()
     if args.target == "integration":
         docker_preflight()
-        run(["sh", "./gradlew", "--no-daemon", "integrationTest", "--rerun-tasks"])
+        # Every suite starts its own brokers and databases; bound how many start at once.
+        run(["sh", "./gradlew", "--no-daemon", "--max-workers=2", "integrationTest", "--rerun-tasks"])
         verify_integration_results()
     else:
         run([sys.executable, "-B", "-m", "unittest", "discover", "-s", "scripts/tests", "-v"])

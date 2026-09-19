@@ -210,6 +210,55 @@ class PostgreSqlRuntimeIntegrationTest {
     }
 
     @Test
+    void unavailableBrokerFencesAtMostOneBatchAndLaterRecordsRemainWithdrawable() {
+        for (int i = 1; i <= 5; i++) {
+            append("order-" + i, "order.created");
+        }
+        AtomicBoolean outage = new AtomicBoolean(true);
+        when(kafka.send(eq(EventsConfig.TOPIC), any(), any())).thenAnswer(invocation -> outage.get()
+                ? CompletableFuture.failedFuture(new IllegalStateException("synthetic broker outage")) : acknowledged());
+        for (int poll = 0; poll < 3; poll++) {
+            assertThatThrownBy(() -> publisher(2, 50).publishBatch()).isInstanceOf(IllegalStateException.class);
+        }
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM outbox WHERE dispatch_started_at IS NOT NULL", Long.class))
+                .isEqualTo(2);
+        transaction.executeWithoutResult(status -> {
+            assertThat(outbox.withdrawUnattempted("order.created", TENANT, "order-1")).isEmpty();
+            assertThat(outbox.withdrawUnattempted("order.created", TENANT, "order-5")).isPresent();
+        });
+        outage.set(false);
+        assertThat(publisher(2, 1000).publishBatch()).isEqualTo(2);
+        assertThat(publisher(2, 1000).publishBatch()).isEqualTo(2);
+        assertThat(publisher(2, 1000).publishBatch()).isZero();
+        assertThat(published()).isEqualTo(4);
+    }
+
+    @Test
+    void withdrawalNeverWaitsForAnInFlightSendAndReportsItAsAttempted() throws Exception {
+        append("in-flight-order", "order.created");
+        CountDownLatch sending = new CountDownLatch(1);
+        CompletableFuture<SendResult<Object, Object>> acknowledgment = new CompletableFuture<>();
+        when(kafka.send(eq(EventsConfig.TOPIC), any(), any())).thenAnswer(invocation -> {
+            sending.countDown();
+            return acknowledgment;
+        });
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<Integer> publish = executor.submit(() -> publisher(1, 15_000).publishBatch());
+            try {
+                assertThat(sending.await(5, TimeUnit.SECONDS)).isTrue();
+                Future<Boolean> withdrawal = executor.submit(() -> transaction.execute(status ->
+                        outbox.withdrawUnattempted("order.created", TENANT, "in-flight-order").isPresent()));
+                // The publisher still holds the row lock; an answer proves the lookup did not queue behind it.
+                assertThat(withdrawal.get(3, TimeUnit.SECONDS)).isFalse();
+            } finally {
+                acknowledgment.complete(null);
+            }
+            assertThat(publish.get(10, TimeUnit.SECONDS)).isEqualTo(1);
+        }
+        assertThat(published()).isEqualTo(1);
+    }
+
+    @Test
     void partialBatchFailureRollsBackMarkersSoEarlierAcknowledgedRecordsAreSafelyRedelivered() {
         append("first-order", "order.created");
         append("second-order", "order.created");

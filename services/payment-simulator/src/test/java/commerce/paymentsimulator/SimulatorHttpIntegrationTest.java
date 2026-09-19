@@ -31,7 +31,7 @@ import tools.jackson.databind.ObjectMapper;
 @Testcontainers(disabledWithoutDocker = true)
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class SimulatorHttpIntegrationTest {
-    @Container static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:17.6");
+    @Container static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:17.6-alpine");
     private static final String KEY = UUID.randomUUID().toString();
     @LocalServerPort int port;
     @Autowired ObjectMapper mapper;

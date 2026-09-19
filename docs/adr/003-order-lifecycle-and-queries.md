@@ -13,8 +13,10 @@ The publisher commits a durable dispatch fence before any broker send. Cancellat
 the order and its checkout outbox row, removes that row only when unfenced, and atomically
 commits the terminal state, history and `order.cancelled` fact. A fenced event is permanently
 ineligible, including after timeout or restart. This deliberately small cancellation window
-requires neither an inventory release nor payment reversal. Legacy outbox rows are all fenced
-during upgrade because their publication history is unknowable.
+requires neither an inventory release nor payment reversal. Unpublished legacy outbox rows are
+all fenced during upgrade because their publication history is unknowable. Because a fence is
+irrevocable, each publishing instance keeps at most one batch of fenced, unacknowledged records: during a
+broker outage later checkouts stay unfenced and therefore cancellable and expirable.
 
 The same rule permits expiry of never-dispatched orders after 30 minutes (configurable).
 This is a dispatch-staleness threshold, not a reservation or payment deadline. A bounded worker

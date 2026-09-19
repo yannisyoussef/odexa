@@ -40,7 +40,7 @@ import tools.jackson.databind.json.JsonMapper;
 @Testcontainers(disabledWithoutDocker = true)
 @SpringJUnitConfig(PaymentPersistenceIntegrationTest.Config.class)
 class PaymentPersistenceIntegrationTest {
-    @Container static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:17.6");
+    @Container static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:17.6-alpine");
     @Autowired PaymentStore store;
     @Autowired ReservationConsumer consumer;
     @Autowired JdbcTemplate jdbc;

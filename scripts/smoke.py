@@ -223,9 +223,11 @@ def run():
     own = client.call("order", "GET", "/api/v1/orders?limit=2", customer).body
     require(len(own["items"]) == 2 and own["nextCursor"], "Order collection did not produce a bounded continuation")
     next_page = client.call("order", "GET", "/api/v1/orders?limit=2&cursor=" + own["nextCursor"], customer).body
-    require(not ({item["id"] for item in own["items"]} & {item["id"] for item in next_page["items"]}), "Order pages repeated an item")
-    for item in client.call("order", "GET", "/api/v1/orders?status=CONFIRMED&limit=100", customer).body["items"]:
-        require(item["status"] == "CONFIRMED", "Order status filter was ignored")
+    require(next_page["items"] and not ({item["id"] for item in own["items"]} & {item["id"] for item in next_page["items"]}),
+            "Order continuation was empty or repeated an item")
+    confirmed_only = client.call("order", "GET", "/api/v1/orders?status=CONFIRMED&limit=100", customer).body["items"]
+    require(order_id in {item["id"] for item in confirmed_only} and all(item["status"] == "CONFIRMED" for item in confirmed_only),
+            "Order status filter was ignored")
     merchant_page = client.call("order", "GET", "/api/v1/merchant/orders?limit=100", merchant).body
     require(order_id in {item["id"] for item in merchant_page["items"]}, "Merchant cannot see a tenant order")
     detail = client.call("order", "GET", f"/api/v1/merchant/orders/{order_id}", merchant).body
@@ -263,7 +265,8 @@ def run():
         require(cancellation.body["code"] == "ORDER_NOT_CANCELLABLE", "Dispatch race returned an unexpected conflict")
         client.wait_order(cancellable, customer, "STOCK_REJECTED")
     client.wait_inventory(merchant, 0, 0)
-    print("PASS cancellation through gateway: retry-safe success or safe dispatch conflict; stock unchanged")
+    outcome = "retry-safe success" if cancellation.status == 200 else "safe dispatch conflict"
+    print(f"PASS cancellation through gateway: {outcome}; stock unchanged")
     client.call("gateway", "GET", "/actuator/env", expected=(404,), contract=False)
     print("PASS edge denies administrative actuator routes")
     print("PASS local smoke and REST response-shape subset checks; not official schema validation. Local fixture stock was consumed.")

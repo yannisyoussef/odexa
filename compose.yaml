@@ -41,9 +41,9 @@ services:
       KEYCLOAK_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?Bootstrap required}
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./infrastructure/postgres/01-databases.sh:/docker-entrypoint-initdb.d/01-databases.sh:ro
+      - ./infrastructure/postgres/01-databases.sql:/docker-entrypoint-initdb.d/01-databases.sql:ro
     healthcheck:
-      test: [CMD-SHELL, 'pg_isready -U odexa_admin -d postgres']
+      test: [CMD-SHELL, 'pg_isready -h 127.0.0.1 -U odexa_admin -d postgres']
       interval: 5s
       timeout: 3s
       retries: 20

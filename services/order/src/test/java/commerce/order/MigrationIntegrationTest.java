@@ -37,7 +37,15 @@ class MigrationIntegrationTest {
         new ResourceDatabasePopulator(new ClassPathResource("legacy/v0_1_0.sql")).execute(source);
         var jdbc = new JdbcTemplate(source);
         jdbc.update("INSERT INTO customer_order (id,tenant_id,customer_id,idempotency_key,fingerprint,product_id,quantity,product_name,unit_price_minor,total_minor,currency,catalog_version,payment_method,status,version,created_at) VALUES ('11111111-1111-4111-8111-111111111111','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','legacy-owner','legacy-key',repeat('a',64),'22222222-2222-4222-8222-222222222222',2,'Legacy product',2500,5000,'USD',1,'pm_approved','CREATED',0,'2026-01-01T00:00:00Z')");
-        jdbc.update("INSERT INTO outbox(event_id,tenant_id,aggregate_id,topic,payload,occurred_at) VALUES (gen_random_uuid(),gen_random_uuid(),'legacy','commerce.events.v1','{}',CURRENT_TIMESTAMP)");
+        jdbc.update("INSERT INTO customer_order (id,tenant_id,customer_id,idempotency_key,fingerprint,product_id,quantity,product_name,unit_price_minor,total_minor,currency,catalog_version,payment_method,status,version,created_at,reservation_event_id) VALUES ('33333333-3333-4333-8333-333333333333','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','legacy-owner','confirmed-key',repeat('b',64),'22222222-2222-4222-8222-222222222222',1,'Legacy product',2500,2500,'USD',1,'pm_approved','CONFIRMED',2,'2026-01-01T00:00:00Z',gen_random_uuid())");
+        // v0.1.0 cannot prove whether an unpublished checkout already reached the broker.
+        jdbc.update("""
+                INSERT INTO outbox(event_id,tenant_id,aggregate_id,topic,payload,occurred_at,published_at)
+                SELECT gen_random_uuid(), tenant_id, id::text, 'commerce.events.v1',
+                    jsonb_build_object('eventType','order.created','correlationId',gen_random_uuid()::text,'payload',jsonb_build_object('orderId',id::text)),
+                    created_at, CASE WHEN status = 'CONFIRMED' THEN created_at END
+                FROM customer_order
+                """);
         jdbc.update("INSERT INTO inbox(consumer,event_id) VALUES ('legacy',gen_random_uuid())");
         // Default startup fails closed instead of guessing that an arbitrary schema is V1.
         assertThrows(org.flywaydb.core.api.FlywayException.class,
@@ -46,8 +54,9 @@ class MigrationIntegrationTest {
         flyway.baseline();
         flyway.migrate();
         flyway.validate();
-        assertEquals("legacy-owner:legacy-key:5000", jdbc.queryForObject("SELECT customer_id || ':' || idempotency_key || ':' || total_minor FROM customer_order", String.class));
+        assertEquals("legacy-owner:legacy-key:5000", jdbc.queryForObject("SELECT customer_id || ':' || idempotency_key || ':' || total_minor FROM customer_order WHERE idempotency_key = 'legacy-key'", String.class));
         assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM outbox WHERE dispatch_started_at IS NOT NULL AND published_at IS NULL", Integer.class));
+        assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM outbox", Integer.class));
         assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM inbox", Integer.class));
         var orders = new OrderRepository(jdbc);
         var restored = orders.findByKey(java.util.UUID.fromString("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"), "legacy-owner", "legacy-key").orElseThrow();
@@ -58,7 +67,39 @@ class MigrationIntegrationTest {
         assertEquals("LEGACY_SNAPSHOT", history.getFirst().reason());
         assertEquals(restored.order().version(), history.getFirst().version());
         assertTrue(history.getFirst().occurredAt().isAfter(restored.order().createdAt()));
+        var confirmed = orders.findByKey(restored.order().tenantId(), "legacy-owner", "confirmed-key").orElseThrow().order();
+        assertEquals(OrderStatus.CONFIRMED, confirmed.status());
+        assertEquals(2, orders.history(confirmed.id()).getFirst().version());
+
+        // The new application treats the legacy checkout as possibly dispatched: never cancellable or
+        // expirable, and still delivered by the fenced publisher.
+        var manager = new org.springframework.jdbc.datasource.DataSourceTransactionManager(source);
+        var transaction = new org.springframework.transaction.support.TransactionTemplate(manager);
+        var mapper = tools.jackson.databind.json.JsonMapper.builder().build();
+        var lifecycle = new OrderLifecycle(orders, new commerce.runtime.Outbox(jdbc, mapper),
+                java.time.Clock.fixed(java.time.Instant.parse("2030-01-01T00:00:00Z"), java.time.ZoneOffset.UTC), java.time.Duration.ofMinutes(30));
+        var owner = new commerce.runtime.Actor(restored.order().tenantId(), "legacy-owner", java.util.Set.of("CUSTOMER"));
+        assertEquals(409, assertThrows(commerce.runtime.ApiException.class,
+                () -> transaction.execute(status -> lifecycle.cancel(owner, restored.order().id()))).status());
+        assertEquals(0, transaction.<Integer>execute(status -> lifecycle.expireBatch()));
+        var sentKeys = new java.util.ArrayList<Object>();
+        var publisher = new commerce.runtime.OutboxPublisher(jdbc, recording(sentKeys), manager, 25, 1000);
+        assertEquals(1, publisher.publishBatch());
+        assertEquals(java.util.List.of(restored.order().id().toString()), sentKeys);
+        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM outbox WHERE published_at IS NULL", Integer.class));
+        assertEquals(OrderStatus.CREATED, orders.findByKey(restored.order().tenantId(), "legacy-owner", "legacy-key").orElseThrow().order().status());
         assertEquals(0, Flyway.configure().dataSource(source).load().migrate().migrationsExecuted);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static org.springframework.kafka.core.KafkaTemplate<Object, Object> recording(java.util.List<Object> keys) {
+        var kafka = (org.springframework.kafka.core.KafkaTemplate<Object, Object>) org.mockito.Mockito.mock(org.springframework.kafka.core.KafkaTemplate.class);
+        org.mockito.Mockito.when(kafka.send(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+                .thenAnswer(call -> {
+                    keys.add(call.getArgument(1));
+                    return java.util.concurrent.CompletableFuture.completedFuture(null);
+                });
+        return kafka;
     }
 
     private static DriverManagerDataSource isolated() {

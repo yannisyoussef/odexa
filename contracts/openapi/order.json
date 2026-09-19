@@ -159,6 +159,9 @@
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
+          "default": {
+            "$ref": "#/components/responses/UnexpectedError"
+          },
           "500": {
             "$ref": "#/components/responses/UnexpectedError"
           }
@@ -285,6 +288,9 @@
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
+          "default": {
+            "$ref": "#/components/responses/UnexpectedError"
+          },
           "500": {
             "$ref": "#/components/responses/UnexpectedError"
           }
@@ -337,6 +343,9 @@
           },
           "403": {
             "$ref": "#/components/responses/Forbidden"
+          },
+          "default": {
+            "$ref": "#/components/responses/UnexpectedError"
           },
           "500": {
             "$ref": "#/components/responses/UnexpectedError"
@@ -406,6 +415,9 @@
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
+          "default": {
+            "$ref": "#/components/responses/UnexpectedError"
+          },
           "500": {
             "$ref": "#/components/responses/UnexpectedError"
           },
@@ -473,6 +485,9 @@
           },
           "403": {
             "$ref": "#/components/responses/Forbidden"
+          },
+          "default": {
+            "$ref": "#/components/responses/UnexpectedError"
           },
           "500": {
             "$ref": "#/components/responses/UnexpectedError"
@@ -542,6 +557,9 @@
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
+          "default": {
+            "$ref": "#/components/responses/UnexpectedError"
+          },
           "500": {
             "$ref": "#/components/responses/UnexpectedError"
           },
@@ -581,7 +599,7 @@
   },
   "components": {
     "securitySchemes": {
-      "bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT", "description": "OIDC issuer-validated JWT, audience odexa-api, UUID tenant_id, nonempty sub, CUSTOMER in realm_access.roles."}
+      "bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT", "description": "OIDC issuer-validated JWT, audience odexa-api, UUID tenant_id, nonempty sub, and the realm_access.roles entry each operation requires: CUSTOMER for customer operations, MERCHANT_ADMIN or MERCHANT_USER for merchant operations."}
     },
     "parameters": {
       "CorrelationId": {"name": "X-Correlation-ID", "in": "header", "required": false, "description": "UUID correlation identifier; a new UUID is generated if absent. Propagated to catalog and events. Invalid non-UUID values are rejected.", "schema": {"type": "string", "format": "uuid"}}

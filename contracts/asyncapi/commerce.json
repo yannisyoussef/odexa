@@ -43,7 +43,7 @@
     "consumeCommerceFacts": {
       "action": "receive", "channel": {"$ref": "#/channels/commerceEvents"},
       "summary": "Independent consumer groups process owned event types and ignore known non-owned types.",
-      "messages": [{"$ref": "#/channels/commerceEvents/messages/orderCreated"}, {"$ref": "#/channels/commerceEvents/messages/inventoryReserved"}, {"$ref": "#/channels/commerceEvents/messages/inventoryRejected"}, {"$ref": "#/channels/commerceEvents/messages/paymentAuthorized"}, {"$ref": "#/channels/commerceEvents/messages/paymentDeclined"}, {"$ref": "#/channels/commerceEvents/messages/orderCancelled"}, {"$ref": "#/channels/commerceEvents/messages/orderExpired"}, {"$ref": "#/channels/commerceEvents/messages/orderRejected"}]
+      "messages": [{"$ref": "#/channels/commerceEvents/messages/orderCreated"}, {"$ref": "#/channels/commerceEvents/messages/inventoryReserved"}, {"$ref": "#/channels/commerceEvents/messages/inventoryRejected"}, {"$ref": "#/channels/commerceEvents/messages/paymentAuthorized"}, {"$ref": "#/channels/commerceEvents/messages/paymentDeclined"}, {"$ref": "#/channels/commerceEvents/messages/orderConfirmed"}, {"$ref": "#/channels/commerceEvents/messages/orderCancelled"}, {"$ref": "#/channels/commerceEvents/messages/orderExpired"}, {"$ref": "#/channels/commerceEvents/messages/orderRejected"}]
     }
   },
   "components": {

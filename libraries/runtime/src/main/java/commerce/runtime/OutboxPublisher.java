@@ -63,6 +63,24 @@ public class OutboxPublisher {
         // never restore eligibility for an operation requiring proof of no dispatch.
         transaction.executeWithoutResult(status -> {
             JdbcTransactions.requireWritable(jdbc);
+            // A fence is irrevocable. Sendable fenced records that no publisher is currently sending
+            // are an unacknowledged backlog; bound it to one batch per publishing instance so that an
+            // unavailable broker does not fence every later record, which must remain withdrawable.
+            // Rows another instance is sending are locked, skipped, and do not reduce this capacity.
+            int stalled = jdbc.query("""
+                    SELECT o.event_id FROM outbox o
+                    WHERE o.published_at IS NULL AND o.dispatch_started_at IS NOT NULL
+                      AND NOT EXISTS (
+                        SELECT 1 FROM outbox previous
+                        WHERE previous.aggregate_id = o.aggregate_id
+                          AND previous.sequence < o.sequence AND previous.published_at IS NULL
+                      )
+                    ORDER BY o.sequence LIMIT ? FOR UPDATE OF o SKIP LOCKED
+                    """, (row, index) -> row.getObject("event_id", UUID.class), batchSize).size();
+            int capacity = batchSize - stalled;
+            if (capacity < 1) {
+                return;
+            }
             List<UUID> claims = jdbc.query("""
                     SELECT o.event_id FROM outbox o
                     WHERE o.published_at IS NULL AND o.dispatch_started_at IS NULL
@@ -72,7 +90,7 @@ public class OutboxPublisher {
                           AND previous.sequence < o.sequence AND previous.published_at IS NULL
                       )
                     ORDER BY o.sequence LIMIT ? FOR UPDATE OF o SKIP LOCKED
-                    """, (row, index) -> row.getObject("event_id", UUID.class), batchSize);
+                    """, (row, index) -> row.getObject("event_id", UUID.class), capacity);
             for (UUID id : claims) {
                 jdbc.update("UPDATE outbox SET dispatch_started_at = clock_timestamp() WHERE event_id = ?", id);
             }
