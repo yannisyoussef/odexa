@@ -106,6 +106,7 @@ class Client:
         # Renew only known fixture identities before expiry; never retry an unexpected 401.
         with self._token_lock:
             started = time.monotonic()
+            wall_started = time.time()
             data = urlencode({"client_id": "odexa-cli", "grant_type": "password", "username": username, "password": self.password}).encode()
             response = self.transport(self.issuer + "/protocol/openid-connect/token", "POST",
                                       {"Content-Type": "application/x-www-form-urlencoded"}, data)
@@ -116,7 +117,8 @@ class Client:
             require(type(lifetime) is int and 0 < lifetime <= 86400, "Invalid fixture token lifetime")
             token = response.body["access_token"]
             self._token_users[token] = username
-            self._sessions[username] = (token, started + lifetime - min(30, lifetime / 10))
+            renew_after = lifetime - min(30, lifetime / 10)
+            self._sessions[username] = (token, started + renew_after, wall_started + renew_after)
             return token
 
     def current_token(self, token):
@@ -124,8 +126,9 @@ class Client:
             username = self._token_users.get(token)
             if username is None:
                 return token
-            current, renew_at = self._sessions[username]
-            if time.monotonic() >= renew_at:
+            # Wall time catches a suspended local VM; monotonic time still bounds backward clock changes.
+            current, renew_at, wall_renew_at = self._sessions[username]
+            if time.monotonic() >= renew_at or time.time() >= wall_renew_at:
                 return self.token(username)
             return current
 

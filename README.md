@@ -117,5 +117,6 @@ See [basket design and compatibility](docs/adr/005-multi-item-commerce.md) and
 `--no-build` runs against already built images. Neither command removes existing volumes.
 
 The smoke client renews its known local fixture tokens before their advertised expiry so long
-recovery scenarios remain authenticated. Unexpected 401 responses still fail verification; it
+recovery scenarios remain authenticated, including after local VM suspension or clock changes.
+Unexpected 401 responses still fail verification; it
 does not extend server token lifetimes or retry authorization failures.

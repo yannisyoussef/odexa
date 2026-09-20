@@ -260,6 +260,18 @@ class SmokeTokenTests(unittest.TestCase):
                 self.assertEqual({"new"}, set(pool.map(lambda _: client.current_token(original), range(16))))
             self.assertEqual(2, transport.call_count)
 
+    def test_clock_jump_or_suspension_renews_without_waiting_for_monotonic_expiry(self):
+        for later_wall, later_monotonic in ((1600, 1001), (900, 1300)):
+            client = self.client()
+            replies = [smoke.Response(200, {}, {"access_token": value, "expires_in": 300}) for value in ("old", "new")]
+            with patch.object(client, "transport", side_effect=replies) as transport, patch.object(smoke.time, "monotonic", return_value=1000) as monotonic, patch.object(smoke.time, "time", return_value=1000) as wall:
+                original = client.token("customer-a")
+                monotonic.return_value = later_monotonic
+                wall.return_value = later_wall
+                self.assertEqual("new", client.current_token(original))
+                self.assertEqual("new", client.current_token(original))
+                self.assertEqual(2, transport.call_count)
+
     def test_invalid_expiry_metadata_fails_without_reusing_a_token(self):
         for lifetime in (None, 0, -1, "300", True, 86401):
             client = self.client()
