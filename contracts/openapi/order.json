@@ -4,7 +4,7 @@
   "info": {
     "title": "Odexa Order API",
     "version": "1.3.0",
-    "description": "Single-product checkout, owned customer queries and explicit tenant merchant views. Bearer JWTs validate issuer and odexa-api audience. CUSTOMER operations always scope tenant_id and sub; merchant operations require MERCHANT_ADMIN or MERCHANT_USER and scope tenant_id. Tenant/owner filters cannot be supplied by clients. No support/platform bypass. Responses contain no customer subject or provider references."
+    "description": "Multi-item checkout, owned customer queries and explicit tenant merchant views. Bearer JWTs validate issuer and odexa-api audience. CUSTOMER operations always scope tenant_id and sub; merchant operations require MERCHANT_ADMIN or MERCHANT_USER and scope tenant_id. Tenant/owner filters cannot be supplied by clients. No support/platform bypass. Responses contain no customer subject or provider references."
   },
   "servers": [
     {
@@ -28,7 +28,7 @@
           "Orders"
         ],
         "operationId": "createOrder",
-        "summary": "Create or replay a single-product checkout",
+        "summary": "Accept a bounded basket with authoritative prices and semantic idempotency",
         "description": "Accepts one atomic basket asynchronously after one authenticated catalog batch snapshot. Missing/foreign product:404; inactive:409; zero total or overflow:422; invalid size/quantity, duplicate IDs, mixed forms or server-owned fields:400. At most20 distinct lines,100 units each. Legacy single-product input remains supported. Same key with reordered identical items replays; changed intent conflicts409.",
         "parameters": [
           {

@@ -1,7 +1,7 @@
 # Gateway
 
 The edge forwards only the explicit public routes in `Routes`. Catalog's authenticated
-`POST /internal/v1/products/batch` is private and deliberately absent. Existing checkout routes
+`POST /api/internal/v1/products/batch` is private and deliberately absent. Existing checkout routes
 accept either the legacy single-product request or bounded `items` input. OpenAPI reuses the
 order contract for request, detail and collection representations.
 

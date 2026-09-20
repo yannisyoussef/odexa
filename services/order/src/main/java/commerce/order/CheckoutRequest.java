@@ -10,6 +10,40 @@ import java.util.*;
 /** Compatibility transport only: both forms become one canonical purchase intent. */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record CheckoutRequest(UUID productId, Integer quantity, List<Item> items, String paymentMethod) {
+    @com.fasterxml.jackson.annotation.JsonCreator(mode = com.fasterxml.jackson.annotation.JsonCreator.Mode.DISABLED)
+    public CheckoutRequest { }
+
+    /** Presence matters: null is not a way to mix the legacy and basket forms. */
+    @com.fasterxml.jackson.annotation.JsonCreator(mode = com.fasterxml.jackson.annotation.JsonCreator.Mode.DELEGATING)
+    public static CheckoutRequest fromJson(tools.jackson.databind.JsonNode json) {
+        if (json == null || !json.isObject()) throw invalid();
+        var method = json.get("paymentMethod");
+        if (method == null || !method.isString()) throw invalid();
+        if (json.has("items")) {
+            var items = json.get("items");
+            if (json.size() != 2 || items == null || !items.isArray() || items.isEmpty() || items.size() > 20) throw invalid();
+            var lines = new ArrayList<Item>();
+            for (var item : items) {
+                if (!item.isObject() || item.size() != 2) throw invalid();
+                lines.add(readItem(item));
+            }
+            return new CheckoutRequest(lines,method.stringValue());
+        }
+        if (json.size() != 3) throw invalid();
+        Item item = readItem(json);
+        return new CheckoutRequest(item.productId(),item.quantity(),method.stringValue());
+    }
+    private static Item readItem(tools.jackson.databind.JsonNode json) {
+        var id = json.get("productId"); var quantity = json.get("quantity");
+        if (id == null || !id.isString() || quantity == null || !quantity.isIntegralNumber()
+                || !quantity.canConvertToInt()) throw invalid();
+        try {
+            UUID uuid = UUID.fromString(id.stringValue());
+            if (!uuid.toString().equalsIgnoreCase(id.stringValue())) throw invalid();
+            return new Item(uuid,quantity.intValue());
+        } catch (IllegalArgumentException error) { throw invalid(); }
+    }
+
     public record Item(UUID productId, int quantity) { }
     public CheckoutRequest(UUID productId, int quantity, String paymentMethod) {
         this(productId, quantity, null, paymentMethod);

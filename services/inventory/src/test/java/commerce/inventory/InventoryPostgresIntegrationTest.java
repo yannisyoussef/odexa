@@ -327,6 +327,54 @@ class InventoryPostgresIntegrationTest {
         assertEquals(5,stock.get(tenant,product).version()); assertEquals(5,stock.get(tenant,b).version());
     }
 
+    @Test void databaseLockProbeProvesReserveAndSettleAcquireLowProductBeforeHighProduct() throws Exception {
+        UUID low = UUID.fromString("00000000-0000-4000-8000-000000000001");
+        UUID high = UUID.fromString("ffffffff-ffff-4fff-8fff-ffffffffffff");
+        for (UUID id : List.of(low,high)) jdbc.update("INSERT INTO inventory_stock(tenant_id,product_id,on_hand) VALUES(?,?,10)",tenant,id);
+        var order = basket(new OrderCreated.Line(high,3),new OrderCreated.Line(low,2));
+        // Reverse the actual wire array, bypassing the constructor's already normalized representation.
+        var payload = (tools.jackson.databind.node.ObjectNode) mapper.valueToTree(order);
+        payload.set("items",mapper.valueToTree(order.items().reversed()));
+        var reversed = new Event(UUID.randomUUID(),"order.created",2,Instant.now(),UUID.randomUUID().toString(),null,tenant,payload);
+        probeLocks(() -> listener.onEvent(record(reversed)),low,high);
+        assertEquals(2,stock.get(tenant,low).reserved()); assertEquals(3,stock.get(tenant,high).reserved());
+        var authorized = payment(order.orderId(),true);
+        probeLocks(() -> listener.onEvent(record(authorized)),low,high);
+        assertEquals(8,stock.get(tenant,low).onHand()); assertEquals(7,stock.get(tenant,high).onHand());
+        assertEquals(0,stock.get(tenant,low).reserved()); assertEquals(0,stock.get(tenant,high).reserved());
+    }
+
+    /** Observe a real PostgreSQL lock wait, then prove the later row remains independently lockable. */
+    private void probeLocks(Runnable operation, UUID low, UUID high) throws Exception {
+        String application = "basket-lock-" + UUID.randomUUID();
+        try (var blocker = jdbc.getDataSource().getConnection(); var executor = Executors.newSingleThreadExecutor()) {
+            blocker.setAutoCommit(false);
+            try (var lock = blocker.prepareStatement("SELECT 1 FROM inventory_stock WHERE tenant_id = ? AND product_id = ? FOR UPDATE")) {
+                lock.setObject(1,tenant); lock.setObject(2,low); lock.executeQuery().close();
+            }
+            var future = executor.submit(() -> tx.executeWithoutResult(status -> {
+                jdbc.queryForObject("SELECT set_config('application_name', ?, true)",String.class,application);
+                operation.run();
+            }));
+            try {
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                boolean waiting = false;
+                while (System.nanoTime() < deadline && !(waiting = jdbc.queryForObject(
+                        "SELECT count(*) FROM pg_stat_activity WHERE application_name = ? AND wait_event_type = 'Lock'",
+                        Integer.class,application) == 1)) Thread.sleep(10);
+                assertTrue(waiting,"The basket transaction must demonstrably wait on the locked low stock row");
+                assertFalse(future.isDone());
+                try (var probe = jdbc.getDataSource().getConnection()) {
+                    probe.setAutoCommit(false);
+                    try (var lock = probe.prepareStatement("SELECT 1 FROM inventory_stock WHERE tenant_id = ? AND product_id = ? FOR UPDATE NOWAIT")) {
+                        lock.setObject(1,tenant); lock.setObject(2,high); assertTrue(lock.executeQuery().next());
+                    } finally { probe.rollback(); }
+                }
+            } finally { blocker.rollback(); }
+            future.get(15,TimeUnit.SECONDS);
+        }
+    }
+
     private UUID addStock(long amount) {
         UUID id = UUID.randomUUID(); jdbc.update("INSERT INTO inventory_stock(tenant_id,product_id,on_hand) VALUES(?,?,?)",tenant,id,amount); return id;
     }

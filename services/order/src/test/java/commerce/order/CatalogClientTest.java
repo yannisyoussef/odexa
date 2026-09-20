@@ -30,7 +30,7 @@ class CatalogClientTest {
     @Test
     void forwardsBearerAndCorrelationAndUsesAuthoritativeSnapshot() {
         String correlation = UUID.randomUUID().toString();
-        server.expect(requestTo("http://catalog.test/internal/v1/products/batch"))
+        server.expect(requestTo("http://catalog.test/api/internal/v1/products/batch"))
                 .andExpect(method(HttpMethod.POST))
                 .andExpect(header("Authorization", "Bearer unused-test-jwt"))
                 .andExpect(header("X-Correlation-ID", correlation))

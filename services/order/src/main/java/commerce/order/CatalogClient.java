@@ -43,7 +43,7 @@ public class CatalogClient {
         var intent = request.normalizedItems();
         CatalogProduct[] products;
         try {
-            products = client.post().uri("/internal/v1/products/batch")
+            products = client.post().uri("/api/internal/v1/products/batch")
                     .headers(headers -> {
                         headers.setBearerAuth(bearer);
                         headers.set("X-Correlation-ID", correlationId);

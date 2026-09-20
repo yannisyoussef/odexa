@@ -425,7 +425,7 @@ class OrderDatabaseIntegrationTest {
 
     @Test
     void expiryDrainsABacklogLargerThanOneBatchAcrossPollsWithTheCheckoutCorrelation() {
-        CheckoutSnapshot snapshot = OrderStateMachineTest.created().snapshot();
+        CheckoutSnapshot snapshot = basket();
         UUID tenant = UUID.randomUUID();
         Instant created = Instant.parse("2026-09-01T00:00:00Z");
         for (int i = 1; i <= 30; i++) {

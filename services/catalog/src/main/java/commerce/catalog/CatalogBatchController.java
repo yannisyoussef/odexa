@@ -15,7 +15,7 @@ public class CatalogBatchController {
     public record Snapshot(UUID id, String name, long unitPriceMinor, String currency, boolean active, long version) {
         static Snapshot of(Product p) { return new Snapshot(p.id(),p.name(),p.unitPriceMinor(),p.currency(),p.active(),p.version()); }
     }
-    @PostMapping("/internal/v1/products/batch")
+    @PostMapping("/api/internal/v1/products/batch")
     public List<Snapshot> batch(@AuthenticationPrincipal Jwt jwt, @RequestBody Batch request) {
         Actor actor = Actor.from(jwt);
         actor.requireRole("CUSTOMER");

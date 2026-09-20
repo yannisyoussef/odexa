@@ -130,13 +130,13 @@ class MigrationIntegrationTest {
         var source = isolated();
         Flyway.configure().dataSource(source).target("4").load().migrate();
         var jdbc = new JdbcTemplate(source);
-        UUID id = UUID.randomUUID(), tenant = UUID.randomUUID(), product = UUID.randomUUID();
+        UUID id = UUID.randomUUID(), tenant = UUID.randomUUID(), product = UUID.fromString("22222222-2222-4222-8222-222222222222");
         var intent = new CheckoutRequest(product,2,"pm_approved");
         jdbc.update("""
                 INSERT INTO customer_order(id,tenant_id,customer_id,idempotency_key,fingerprint,product_id,
                     quantity,product_name,unit_price_minor,total_minor,currency,catalog_version,payment_method,status,version,created_at)
                 VALUES (?,?,'owner','legacy-replay',?,?,2,'Accepted price',2500,5000,'USD',7,'pm_approved','CREATED',0,'2026-01-01T00:00:00Z')
-                """,id,tenant,intent.fingerprint(),product);
+                """,id,tenant,"919e76e5e55309f8fd437a6c15a35d1440190feb89a98a2885e4588c828913f5",product); // Frozen v0.3 single-product digest.
         jdbc.update("INSERT INTO order_history VALUES (?,0,'CREATED','2026-01-01T00:00:00Z','ORDER_CREATED')",id);
         var mapper = tools.jackson.databind.json.JsonMapper.builder().build();
         var oldEvent = new commerce.runtime.Event(UUID.randomUUID(),"order.created",1,java.time.Instant.now(),UUID.randomUUID().toString(),null,tenant,

@@ -322,7 +322,7 @@
         }
       }
     },
-    "/internal/v1/products/batch": {
+    "/api/internal/v1/products/batch": {
       "post": {
         "operationId": "lookupCheckoutProducts",
         "summary": "Private authenticated checkout snapshot lookup",

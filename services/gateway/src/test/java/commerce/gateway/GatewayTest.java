@@ -72,7 +72,7 @@ class GatewayTest {
                 .andExpect(status().isCreated());
         edge.perform(post("/api/v1/orders").contentType("application/json").content(basket + " ".repeat(32769-basket.length())))
                 .andExpect(status().is(413));
-        edge.perform(post("/internal/v1/products/batch").content("{}")).andExpect(status().isNotFound());
+        edge.perform(post("/api/internal/v1/products/batch").content("{}")).andExpect(status().isNotFound());
         assertEquals(2,calls.get());
     }
 
