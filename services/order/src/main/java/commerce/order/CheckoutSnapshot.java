@@ -9,8 +9,7 @@ public record CheckoutSnapshot(UUID productId, int quantity, String productName,
     public CheckoutSnapshot {
         if (productId == null || quantity < 1 || quantity > 100 || productName == null
                 || productName.isBlank() || unitPriceMinor <= 0 || !"USD".equals(currency)
-                || catalogVersion < 0 || !("pm_approved".equals(paymentMethod)
-                || "pm_declined".equals(paymentMethod))) {
+                || catalogVersion < 0 || (paymentMethod == null || !paymentMethod.matches("pm_[A-Za-z0-9_]{1,125}"))) {
             throw new IllegalArgumentException("Invalid checkout snapshot");
         }
         if (Math.multiplyExact(unitPriceMinor, quantity) != totalMinor) {

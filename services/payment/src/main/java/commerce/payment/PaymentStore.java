@@ -17,8 +17,19 @@ public class PaymentStore {
     private final JdbcTemplate jdbc;
     private final Outbox outbox;
     private final RetryPolicy retry;
+    private final String provider;
 
     public PaymentStore(JdbcTemplate jdbc, Outbox outbox, RetryPolicy retry) {
+        this(jdbc, outbox, retry, "simulator");
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public PaymentStore(JdbcTemplate jdbc, Outbox outbox, RetryPolicy retry,
+            @org.springframework.beans.factory.annotation.Value("${payment.provider:simulator}") String provider) {
+        if (!java.util.Set.of("simulator", "stripe").contains(provider)) {
+            throw new IllegalArgumentException("Unknown payment provider");
+        }
+        this.provider = provider;
         this.jdbc = jdbc;
         this.outbox = outbox;
         this.retry = retry;
@@ -28,12 +39,12 @@ public class PaymentStore {
     public void enqueue(Event event, ReservedPayment payment) {
         int inserted = jdbc.update("""
                 INSERT INTO payment (id, tenant_id, order_id, customer_id, amount_minor, currency,
-                    payment_method, reservation_event_id, correlation_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    payment_method, reservation_event_id, correlation_id, provider)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (tenant_id, order_id) DO NOTHING
                 """, UUID.randomUUID(), event.tenantId(), payment.orderId(), payment.customerId(),
                 payment.totalMinor(), payment.currency(), payment.paymentMethod(), event.eventId(),
-                event.correlationId());
+                event.correlationId(), provider);
         if (inserted == 0) {
             Boolean same = jdbc.queryForObject("""
                     SELECT customer_id = ? AND amount_minor = ? AND currency = ? AND payment_method = ?
@@ -50,21 +61,23 @@ public class PaymentStore {
         // A process that dies on its final attempt must not leave an immortal pending job.
         jdbc.update("""
                 WITH expired AS (
-                    SELECT id FROM payment WHERE status = 'PENDING' AND attempts >= ?
+                    SELECT id FROM payment WHERE status = 'PENDING' AND (attempts >= ? OR created_at < CURRENT_TIMESTAMP - INTERVAL '23 hours')
                       AND (lease_until IS NULL OR lease_until <= CURRENT_TIMESTAMP)
                     ORDER BY next_attempt_at LIMIT 100 FOR UPDATE SKIP LOCKED
                 ) UPDATE payment p SET status = 'REVIEW_REQUIRED', lease_token = NULL,
-                    lease_until = NULL, updated_at = CURRENT_TIMESTAMP
+                    lease_until = NULL, next_attempt_at = CURRENT_TIMESTAMP + INTERVAL '60 seconds', updated_at = CURRENT_TIMESTAMP
                   FROM expired WHERE p.id = expired.id
                 """, retry.maxAttempts());
         UUID token = UUID.randomUUID();
         List<Claim> claims = jdbc.query("""
                 WITH due AS (
-                    SELECT id FROM payment WHERE status = 'PENDING' AND attempts < ?
+                    SELECT id FROM payment WHERE ((status = 'PENDING' AND attempts < ?
+                        AND created_at >= CURRENT_TIMESTAMP - INTERVAL '23 hours') OR status = 'REVIEW_REQUIRED')
                       AND next_attempt_at <= CURRENT_TIMESTAMP
                       AND (lease_until IS NULL OR lease_until <= CURRENT_TIMESTAMP)
                     ORDER BY next_attempt_at, created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED
-                ) UPDATE payment p SET attempts = p.attempts + 1, lease_token = ?,
+                ) UPDATE payment p SET attempts = p.attempts + CASE WHEN p.status = 'PENDING' THEN 1 ELSE 0 END,
+                    reconciliation_attempts = LEAST(p.reconciliation_attempts + 1, 1000000), lease_token = ?,
                     lease_until = CURRENT_TIMESTAMP + (? * INTERVAL '1 second'),
                     updated_at = CURRENT_TIMESTAMP
                   FROM due WHERE p.id = due.id RETURNING p.*
@@ -72,7 +85,9 @@ public class PaymentStore {
                 rs.getObject("tenant_id", UUID.class), rs.getObject("order_id", UUID.class),
                 rs.getLong("amount_minor"), rs.getString("currency"), rs.getString("payment_method"),
                 rs.getInt("attempts"), rs.getObject("lease_token", UUID.class),
-                rs.getObject("reservation_event_id", UUID.class), rs.getString("correlation_id")),
+                rs.getObject("reservation_event_id", UUID.class), rs.getString("correlation_id"),
+                rs.getString("provider"), rs.getString("provider_id"), rs.getString("status"),
+                rs.getInt("reconciliation_attempts")),
                 retry.maxAttempts(), token, retry.leaseSeconds());
         return claims.stream().findFirst();
     }
@@ -81,10 +96,12 @@ public class PaymentStore {
     public boolean complete(Claim claim, PaymentProvider.Result result) {
         int updated = jdbc.update("""
                 UPDATE payment SET status = ?, provider_id = ?, lease_token = NULL, lease_until = NULL,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = ? AND status = 'PENDING' AND lease_token = ?
-                """, result.outcome().name(), result.providerId(), claim.id(), claim.leaseToken());
+                    next_attempt_at = CURRENT_TIMESTAMP + INTERVAL '60 seconds', updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status IN ('PENDING', 'REVIEW_REQUIRED') AND lease_token = ?
+                    AND (provider_id IS NULL OR provider_id = ?)
+                """, result.outcome().name(), result.providerId(), claim.id(), claim.leaseToken(), result.providerId());
         if (updated == 0) return false; // Late result from an expired/reassigned worker is fenced out.
+        if (result.outcome() == PaymentProvider.Outcome.REVIEW_REQUIRED) return true;
         String type = result.outcome() == PaymentProvider.Outcome.AUTHORIZED
                 ? "payment.authorized" : "payment.declined";
         outbox.append(type, claim.tenantId(), claim.orderId().toString(),
@@ -98,9 +115,9 @@ public class PaymentStore {
                 UPDATE payment SET status = ?, lease_token = NULL, lease_until = NULL,
                     next_attempt_at = CURRENT_TIMESTAMP + (? * INTERVAL '1 second'),
                     updated_at = CURRENT_TIMESTAMP
-                WHERE id = ? AND status = 'PENDING' AND lease_token = ?
-                """, retry.exhausted(claim.attempts()) ? "REVIEW_REQUIRED" : "PENDING",
-                retry.delay(claim.attempts()).toSeconds(), claim.id(), claim.leaseToken());
+                WHERE id = ? AND status IN ('PENDING', 'REVIEW_REQUIRED') AND lease_token = ?
+                """, claim.reconciling() || retry.exhausted(claim.attempts()) ? "REVIEW_REQUIRED" : "PENDING",
+                retry.delay(claim.reconciling() ? claim.reconciliationAttempts() : claim.attempts()).toSeconds(), claim.id(), claim.leaseToken());
     }
 
     @Transactional(readOnly = true)
@@ -117,9 +134,15 @@ public class PaymentStore {
 
     public record Claim(UUID id, UUID tenantId, UUID orderId, long amountMinor, String currency,
                         String paymentMethod, int attempts, UUID leaseToken, UUID reservationEventId,
-                        String correlationId) {
+                        String correlationId, String provider, String providerId, String status, int reconciliationAttempts) {
+        public Claim(UUID id, UUID tenantId, UUID orderId, long amountMinor, String currency,
+                     String paymentMethod, int attempts, UUID leaseToken, UUID reservationEventId, String correlationId) {
+            this(id, tenantId, orderId, amountMinor, currency, paymentMethod, attempts, leaseToken,
+                 reservationEventId, correlationId, "simulator", null, "PENDING", 0);
+        }
+        boolean reconciling() { return "REVIEW_REQUIRED".equals(status); }
         PaymentProvider.Request request() {
-            return new PaymentProvider.Request(orderId, amountMinor, currency, paymentMethod);
+            return new PaymentProvider.Request(orderId, amountMinor, currency, paymentMethod, provider);
         }
     }
     public record View(UUID id, UUID orderId, long amountMinor, String currency, String status,

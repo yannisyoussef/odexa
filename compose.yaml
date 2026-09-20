@@ -180,6 +180,11 @@ services:
       DB_USER: payment
       DB_PASSWORD: ${PAYMENT_DB_PASSWORD:?Bootstrap required}
       SIMULATOR_URL: http://payment-simulator:8085
+      PAYMENT_PROVIDER: ${PAYMENT_PROVIDER:-simulator}
+      STRIPE_ENABLED: ${STRIPE_ENABLED:-false}
+      STRIPE_API_KEY: ${STRIPE_API_KEY:-}
+      STRIPE_WEBHOOK_SECRETS: ${STRIPE_WEBHOOK_SECRETS:-}
+      SIMULATOR_WEBHOOK_SECRETS: ${SIMULATOR_WEBHOOK_SECRET:?Bootstrap required}
       PROVIDER_API_KEY: ${PROVIDER_API_KEY:?Bootstrap required}
     depends_on:
       <<: *domain-depends
@@ -197,6 +202,8 @@ services:
       DB_USER: simulator
       DB_PASSWORD: ${SIMULATOR_DB_PASSWORD:?Bootstrap required}
       PROVIDER_API_KEY: ${PROVIDER_API_KEY:?Bootstrap required}
+      SIMULATOR_WEBHOOKS_ENABLED: true
+      SIMULATOR_WEBHOOK_SECRET: ${SIMULATOR_WEBHOOK_SECRET:?Bootstrap required}
     depends_on:
       postgres: {condition: service_healthy}
 

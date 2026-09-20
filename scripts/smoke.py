@@ -154,7 +154,8 @@ class Client:
 
 
 def run():
-    client = Client(environment())
+    values = environment()
+    client = Client(values)
     tokens = {username: client.token(username) for username in ("customer-a", "customer-b", "customer-other-a", "merchant-a")}
     customer, merchant = tokens["customer-a"], tokens["merchant-a"]
     client.call("catalog", "GET", "/api/v1/products", expected=(401,))
@@ -267,6 +268,53 @@ def run():
     client.wait_inventory(merchant, 0, 0)
     outcome = "retry-safe success" if cancellation.status == 200 else "safe dispatch conflict"
     print(f"PASS cancellation through gateway: {outcome}; stock unchanged")
+    refund_path = f"/api/v1/merchant/payments/{order_id}/refunds"
+    refund_body = {"amountMinor": confirmed["totalMinor"], "currency": "USD"}
+    refund_key = {"Idempotency-Key": str(uuid4())}
+    client.call("payment", "POST", refund_path, customer, refund_body, refund_key, expected=(403,))
+    refund = client.call("payment", "POST", refund_path, merchant, refund_body, refund_key, expected=(201,)).body
+    replay = client.call("payment", "POST", refund_path, merchant, refund_body, refund_key).body
+    require(replay["id"] == refund["id"], "Refund retry changed identity")
+    client.call("payment", "POST", refund_path, merchant, {**refund_body, "amountMinor": refund_body["amountMinor"] + 1}, refund_key, expected=(409,))
+    def wait_refund(order, identity):
+        deadline = time.monotonic() + client.timeout
+        while time.monotonic() < deadline:
+            current = client.call("payment", "GET", f"/api/v1/payments/{order}/refunds/{identity}", customer).body
+            if current["status"] == "SUCCEEDED":
+                return current
+            require(current["status"] != "FAILED", "Refund unexpectedly failed")
+            time.sleep(0.5)
+        raise SmokeFailure("Refund did not converge before deadline")
+    wait_refund(order_id, refund["id"])
+    client.call("payment", "GET", f"/api/v1/payments/{order_id}/refunds/{refund['id']}", tokens["customer-other-a"], expected=(404,))
+    client.wait_order(order_id, customer, "CONFIRMED")
+    client.wait_inventory(merchant, 0, 0)
+    print("PASS merchant full refund, replay/conflict, privacy and financial-only inventory semantics")
+    import hashlib
+    import hmac
+    signed_body = {"id": "evt_" + uuid4().hex, "type": "unknown.future_type", "livemode": False}
+    raw = json.dumps(signed_body).encode()
+    timestamp = str(int(time.time()))
+    signature = "t=" + timestamp + ",v1=" + hmac.new(values["SIMULATOR_WEBHOOK_SECRET"].encode(), timestamp.encode() + b"." + raw, hashlib.sha256).hexdigest()
+    for _ in range(2):
+        client.call("payment", "POST", "/api/v1/webhooks/simulator", body=signed_body,
+                    headers={"Simulator-Signature": signature}, expected=(204,))
+    client.call("payment", "POST", "/api/v1/webhooks/simulator", body={**signed_body, "type": "modified"},
+                headers={"Simulator-Signature": signature}, expected=(400,))
+    print("PASS signed raw webhook through gateway, duplicate acceptance and tamper rejection")
+    current = client.inventory(merchant)
+    client.call("inventory", "PUT", f"/api/v1/inventory/{PRODUCT}", merchant, {"onHand": 2}, {"If-Match": current.headers.get("ETag")})
+    for method, expected in (("pm_lost_response", "CONFIRMED"), ("pm_reconcile_declined", "PAYMENT_FAILED"), ("pm_refund_lost", "CONFIRMED")):
+        created = client.call("order", "POST", "/api/v1/orders", customer, {**payload, "paymentMethod": method},
+                              {"Idempotency-Key": str(uuid4())}, expected=(201,)).body
+        resolved = client.wait_order(created["id"], customer, expected)
+        if method == "pm_refund_lost":
+            pending = client.call("payment", "POST", f"/api/v1/merchant/payments/{created['id']}/refunds", merchant,
+                                  {"amountMinor": resolved["totalMinor"], "currency": "USD"},
+                                  {"Idempotency-Key": str(uuid4())}, expected=(201,)).body
+            wait_refund(created["id"], pending["id"])
+    client.wait_inventory(merchant, 0, 0)
+    print("PASS lost payment/refund responses reconcile; authoritative decline releases stock")
     client.call("gateway", "GET", "/actuator/env", expected=(404,), contract=False)
     print("PASS edge denies administrative actuator routes")
     print("PASS local smoke and REST response-shape subset checks; not official schema validation. Local fixture stock was consumed.")

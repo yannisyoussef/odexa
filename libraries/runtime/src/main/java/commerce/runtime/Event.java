@@ -16,7 +16,7 @@ public record Event(UUID eventId, String eventType, int eventVersion,
         @JsonFormat(shape = JsonFormat.Shape.STRING) Instant occurredAt,
         String correlationId, UUID causationId, UUID tenantId, JsonNode payload) {
     private static final Set<String> TYPES = Set.of("order.created", "inventory.reserved",
-            "inventory.rejected", "payment.authorized", "payment.declined", "order.confirmed", "order.rejected", "order.cancelled", "order.expired");
+            "inventory.rejected", "payment.authorized", "payment.declined", "order.confirmed", "order.rejected", "order.cancelled", "order.expired", "payment.refunded", "refund.failed");
 
     @JsonCreator(mode = JsonCreator.Mode.DISABLED)
     public Event {

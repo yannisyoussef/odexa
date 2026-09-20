@@ -15,6 +15,8 @@ final class Routes {
     private static final Pattern MERCHANT_ORDER = Pattern.compile("/api/v1/merchant/orders(?:/" + ID + "(?:/history)?)?");
     private static final Pattern ORDER_HISTORY = Pattern.compile("/api/v1/orders/" + ID + "/history");
     private static final Pattern ORDER_CANCEL = Pattern.compile("/api/v1/orders/" + ID + "/cancel");
+    private static final Pattern REFUNDS = Pattern.compile("/api/v1/(?:merchant/)?payments/" + ID + "/refunds(?:/" + ID + ")?");
+    static boolean webhook(String path) { return path.equals("/api/v1/webhooks/stripe") || path.equals("/api/v1/webhooks/simulator"); }
     private static final Set<String> HEALTH = Set.of("/actuator/health", "/actuator/health/liveness", "/actuator/health/readiness");
     private final Map<String, URI> destinations;
 
@@ -41,6 +43,9 @@ final class Routes {
     }
 
     URI destination(String method, String path) {
+        if (method.equals("POST") && webhook(path)) return destinations.get("payments");
+        if (REFUNDS.matcher(path).matches() && (method.equals("GET") || method.equals("POST")
+                && path.startsWith("/api/v1/merchant/") && path.endsWith("/refunds"))) return destinations.get("payments");
         if (path.equals("/api/v1/products") && Set.of("GET", "POST").contains(method)) {
             return destinations.get("products");
         }

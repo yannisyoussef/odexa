@@ -44,6 +44,8 @@ class PaymentKafkaSecurityIntegrationTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired ObjectMapper mapper;
     @Autowired MockMvc mvc;
+    @Autowired PaymentStore store;
+    @Autowired ReservationConsumer reservations;
 
     @DynamicPropertySource static void properties(DynamicPropertyRegistry registry) {
         registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
@@ -106,6 +108,46 @@ class PaymentKafkaSecurityIntegrationTest {
             assertTrue(found, "Invalid reservation must be published to DLT");
             assertEquals(0, countPayment(UUID.fromString(key)));
         }
+    }
+
+    @Test void refundHttpRolesOwnershipValidationAndReplay() throws Exception {
+        UUID tenant = UUID.randomUUID(), order = UUID.randomUUID();
+        reservations.receive(mapper.writeValueAsString(new Event(UUID.randomUUID(), "inventory.reserved", 1,
+                Instant.now(), UUID.randomUUID().toString(), null, tenant, mapper.valueToTree(Map.of("orderId", order,
+                "customerId", "refund-owner", "productId", UUID.randomUUID(), "quantity", 1, "totalMinor", 2500,
+                "currency", "USD", "paymentMethod", "pm_approved")))));
+        jdbc.update("UPDATE payment SET status='AUTHORIZED',provider_id=? WHERE order_id=?", UUID.randomUUID().toString(), order);
+        String path = "/api/v1/merchant/payments/" + order + "/refunds";
+        var merchant = jwt().jwt(token -> token.subject("merchant").claim("tenant_id", tenant.toString())
+                .claim("realm_access", Map.of("roles", List.of("MERCHANT_USER"))));
+        var customer = jwt().jwt(token -> token.subject("refund-owner").claim("tenant_id", tenant.toString()));
+        var post = org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post(path)
+                .contentType("application/json").header("Idempotency-Key", "refund-key").content("{\"amountMinor\":2500,\"currency\":\"USD\"}");
+        mvc.perform(post).andExpect(status().isUnauthorized());
+        mvc.perform(post.with(customer)).andExpect(status().isForbidden());
+        var response = mvc.perform(post.with(merchant)).andExpect(status().isCreated()).andReturn().getResponse();
+        mvc.perform(post.with(merchant)).andExpect(status().isOk());
+        String refund = mapper.readTree(response.getContentAsString()).path("id").stringValue();
+        mvc.perform(get("/api/v1/payments/" + order + "/refunds/" + refund).with(customer)).andExpect(status().isOk());
+        mvc.perform(get(path).with(customer)).andExpect(status().isForbidden());
+        mvc.perform(get(path).with(jwt().jwt(token -> token.subject("merchant").claim("tenant_id", UUID.randomUUID().toString())
+                .claim("realm_access", Map.of("roles", List.of("MERCHANT_USER")))))).andExpect(status().isNotFound());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post(path).with(merchant)
+                .contentType("application/json").header("Idempotency-Key", "refund-key")
+                .content("{\"amountMinor\":2501,\"currency\":\"USD\"}")).andExpect(status().isConflict());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post(path).with(merchant)
+                .contentType("application/json").header("Idempotency-Key", "card-input")
+                .content("{\"amountMinor\":2500,\"currency\":\"USD\",\"cardNumber\":\"4111111111111111\"}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test void webhookRoutesReachSignatureVerificationWithoutJwtAndNothingElseIsOpened() throws Exception {
+        for (String provider : List.of("stripe", "simulator")) {
+            mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/v1/webhooks/" + provider)
+                    .contentType("application/json").content("{}")).andExpect(status().isBadRequest());
+        }
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/v1/webhooks/arbitrary")
+                .contentType("application/json").content("{}")).andExpect(status().isUnauthorized());
     }
 
     private int countPayment(UUID order) {

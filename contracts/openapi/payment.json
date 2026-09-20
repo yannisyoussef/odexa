@@ -3,75 +3,748 @@
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "info": {
     "title": "Odexa Payment API",
-    "version": "1.0.0",
-    "description": "Read-only customer payment status. Payment creation is internal and occurs only after inventory.reserved. No public payment creation route. Provider transport failures remain PENDING until bounded retry exhaustion moves the payment to REVIEW_REQUIRED; stock remains held. Stripe and webhooks are deferred for this initial simulator-backed slice."
+    "version": "1.1.0",
+    "description": "Provider-neutral payments and full financial refunds. Creation follows inventory reservation. Durable reconciliation resolves REVIEW_REQUIRED without treating timeouts as declines. Refunds never restore inventory or change the confirmed checkout outcome. Stripe Test Mode and the deterministic HTTP simulator are supported."
   },
-  "servers": [{"url": "http://localhost:8084", "description": "Local service; deployed access is through the gateway"}],
-  "security": [{"bearerAuth": []}],
-  "tags": [{"name": "Payments"}],
+  "servers": [
+    {
+      "url": "http://localhost:8084",
+      "description": "Local service; deployed access is through the gateway"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "Payments"
+    }
+  ],
   "paths": {
     "/api/v1/payments/{orderId}": {
       "get": {
         "operationId": "getPaymentByOrderId",
-        "tags": ["Payments"],
+        "tags": [
+          "Payments"
+        ],
         "summary": "Get the current customer's payment for an order",
         "description": "JWT must have the configured issuer, odexa-api audience, a UUID tenant_id, and sub. Both tenant_id and sub must match the durable payment owner. No role grants an ownership or cross-tenant bypass. Cross-tenant, wrong-owner and unknown orders all return 404. A reservation not yet consumed also returns 404.",
         "parameters": [
-          {"name": "orderId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
-          {"name": "X-Correlation-ID", "in": "header", "required": false, "schema": {"type": "string", "format": "uuid"}, "description": "Optional UUID correlation ID. Runtime supplies a valid ID in the response."}
+          {
+            "name": "orderId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "X-Correlation-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Optional UUID correlation ID. Runtime supplies a valid ID in the response."
+          }
         ],
         "responses": {
           "200": {
             "description": "Current payment status",
-            "headers": {"X-Correlation-ID": {"schema": {"type": "string", "format": "uuid"}}},
-            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Payment"}}}
+            "headers": {
+              "X-Correlation-ID": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Payment"
+                }
+              }
+            }
           },
-          "400": {"$ref": "#/components/responses/BadRequest"},
-          "401": {"$ref": "#/components/responses/Unauthorized"},
-          "403": {"$ref": "#/components/responses/Forbidden"},
-          "404": {"$ref": "#/components/responses/NotFound"},
-          "500": {"$ref": "#/components/responses/InternalError"}
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v1/payments/{orderId}/refunds": {
+      "get": {
+        "operationId": "listCustomerRefunds",
+        "summary": "List visible full refunds",
+        "description": "Requires the payment tenant and owning customer subject; roles do not bypass ownership. Up to 50 items ordered by UUID ascending. Use nextCursor as cursor; traversal is not a snapshot and concurrent inserts before the cursor require a fresh listing. Unknown or repeated query keys return 400.",
+        "parameters": [
+          {
+            "name": "orderId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Refund page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefundPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v1/payments/{orderId}/refunds/{refundId}": {
+      "get": {
+        "operationId": "getCustomerRefund",
+        "summary": "Read a refund",
+        "description": "Requires the payment tenant and owning customer subject; roles do not bypass ownership.",
+        "parameters": [
+          {
+            "name": "orderId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "refundId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Financial refund status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refund"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v1/merchant/payments/{orderId}/refunds": {
+      "get": {
+        "operationId": "listMerchantRefunds",
+        "summary": "List visible full refunds",
+        "description": "Requires MERCHANT_ADMIN or MERCHANT_USER in the payment tenant. Up to 50 items ordered by UUID ascending. Use nextCursor as cursor; traversal is not a snapshot and concurrent inserts before the cursor require a fresh listing. Unknown or repeated query keys return 400.",
+        "parameters": [
+          {
+            "name": "orderId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Refund page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefundPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createFullRefund",
+        "summary": "Request a full financial refund",
+        "description": "Requires MERCHANT_ADMIN or MERCHANT_USER in the payment tenant. Same payment/key and semantic amount/currency replay returns 200. A changed request with the same key returns 409. A pending, uncertain or successful refund prevents another command. A definitive failure allows a new key. The response records a durable request, not provider completion.",
+        "parameters": [
+          {
+            "name": "orderId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,128}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefundRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Durable request created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refund"
+                }
+              }
+            },
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string",
+                  "format": "uri-reference"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Semantic replay",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refund"
+                }
+              }
+            }
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v1/merchant/payments/{orderId}/refunds/{refundId}": {
+      "get": {
+        "operationId": "getMerchantRefund",
+        "summary": "Read a refund",
+        "description": "Requires MERCHANT_ADMIN or MERCHANT_USER in the payment tenant.",
+        "parameters": [
+          {
+            "name": "orderId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "refundId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Financial refund status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refund"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v1/webhooks/stripe": {
+      "post": {
+        "operationId": "receiveStripeWebhook",
+        "summary": "Durably accept a signed provider notification",
+        "security": [],
+        "description": "Exact raw UTF-8 bytes, maximum 65536 bytes. Five-minute past/future timestamp tolerance and durable provider/event deduplication. Active signing secrets support rotation. Test Mode direct-account events only. Unknown types are acknowledged. Accepted notifications schedule authenticated resource lookup, never trust snapshot status or metadata as authorization. No content encoding.",
+        "parameters": [
+          {
+            "name": "Stripe-Signature",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Verified notification durably accepted or duplicate"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "413": {
+            "description": "Body exceeds 64 KiB"
+          },
+          "415": {
+            "description": "Unsupported media or encoding"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v1/webhooks/simulator": {
+      "post": {
+        "operationId": "receiveSimulatorWebhook",
+        "summary": "Durably accept a signed provider notification",
+        "security": [],
+        "description": "Exact raw UTF-8 bytes, maximum 65536 bytes. Five-minute past/future timestamp tolerance and durable provider/event deduplication. Active signing secrets support rotation. Test Mode direct-account events only. Unknown types are acknowledged. Accepted notifications schedule authenticated resource lookup, never trust snapshot status or metadata as authorization. No content encoding.",
+        "parameters": [
+          {
+            "name": "Simulator-Signature",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Verified notification durably accepted or duplicate"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "413": {
+            "description": "Body exceeds 64 KiB"
+          },
+          "415": {
+            "description": "Unsupported media or encoding"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
         }
       }
     }
   },
   "components": {
-    "securitySchemes": {"bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}},
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    },
     "schemas": {
       "Payment": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "orderId", "amountMinor", "currency", "status", "createdAt", "updatedAt"],
+        "required": [
+          "id",
+          "orderId",
+          "amountMinor",
+          "currency",
+          "status",
+          "createdAt",
+          "updatedAt"
+        ],
         "properties": {
-          "id": {"type": "string", "format": "uuid", "description": "Service-owned payment UUID"},
-          "orderId": {"type": "string", "format": "uuid"},
-          "amountMinor": {"type": "integer", "format": "int64", "minimum": 1, "maximum": 9223372036854775807},
-          "currency": {"type": "string", "const": "USD"},
-          "status": {"type": "string", "enum": ["PENDING", "AUTHORIZED", "DECLINED", "REVIEW_REQUIRED"], "description": "Only an authoritative provider decline yields DECLINED. REVIEW_REQUIRED is indeterminate and retains the stock reservation; no automatic release or further retry occurs."},
-          "createdAt": {"type": "string", "format": "date-time", "description": "UTC instant"},
-          "updatedAt": {"type": "string", "format": "date-time", "description": "UTC instant"}
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Service-owned payment UUID"
+          },
+          "orderId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "amountMinor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1,
+            "maximum": 9223372036854775807
+          },
+          "currency": {
+            "type": "string",
+            "const": "USD"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PENDING",
+              "AUTHORIZED",
+              "DECLINED",
+              "REVIEW_REQUIRED"
+            ],
+            "description": "REVIEW_REQUIRED retains stock while automatic bounded-backoff provider lookups continue. Only authoritative terminal failure releases stock."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "UTC instant"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "UTC instant"
+          }
         }
       },
       "Problem": {
         "type": "object",
-        "required": ["type", "title", "status", "detail"],
+        "required": [
+          "type",
+          "title",
+          "status",
+          "detail"
+        ],
         "properties": {
-          "type": {"type": "string", "format": "uri"},
-          "title": {"type": "string"},
-          "status": {"type": "integer", "minimum": 400, "maximum": 599},
-          "detail": {"type": "string"},
-          "instance": {"type": "string", "format": "uri-reference"},
-          "code": {"type": "string"},
-          "correlationId": {"type": "string", "format": "uuid"}
+          "type": {
+            "type": "string",
+            "format": "uri"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "minimum": 400,
+            "maximum": 599
+          },
+          "detail": {
+            "type": "string"
+          },
+          "instance": {
+            "type": "string",
+            "format": "uri-reference"
+          },
+          "code": {
+            "type": "string"
+          },
+          "correlationId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "Refund": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "orderId",
+          "amountMinor",
+          "currency",
+          "status",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Service-owned refund UUID"
+          },
+          "orderId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "amountMinor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1,
+            "maximum": 9223372036854775807
+          },
+          "currency": {
+            "type": "string",
+            "const": "USD"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PENDING",
+              "SUCCEEDED",
+              "FAILED",
+              "REVIEW_REQUIRED"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "UTC instant"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "UTC instant"
+          }
+        }
+      },
+      "RefundRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "amountMinor",
+          "currency"
+        ],
+        "properties": {
+          "amountMinor": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9223372036854775807,
+            "description": "Must equal the entire payment amount"
+          },
+          "currency": {
+            "type": "string",
+            "const": "USD"
+          }
+        }
+      },
+      "RefundPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items",
+          "nextCursor"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+              "$ref": "#/components/schemas/Refund"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          }
         }
       }
     },
     "responses": {
-      "BadRequest": {"description": "Malformed order UUID or request", "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
-      "Unauthorized": {"description": "Missing, invalid or expired bearer token", "headers": {"WWW-Authenticate": {"schema": {"type": "string"}}}, "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
-      "Forbidden": {"description": "Authenticated token lacks a valid tenant or subject", "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
-      "NotFound": {"description": "No payment visible to this tenant and owner", "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}},
-      "InternalError": {"description": "Sanitized internal failure", "content": {"application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}}
+      "BadRequest": {
+        "description": "Malformed order UUID or request",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "Missing, invalid or expired bearer token",
+        "headers": {
+          "WWW-Authenticate": {
+            "schema": {
+              "type": "string"
+            }
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "Authenticated token lacks a valid tenant or subject",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "No payment visible to this tenant and owner",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "Sanitized internal failure",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "Conflict": {
+        "description": "IDEMPOTENCY_CONFLICT, FULL_REFUND_REQUIRED, PAYMENT_NOT_AUTHORIZED or REFUND_ALREADY_EXISTS",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      }
     }
   }
 }

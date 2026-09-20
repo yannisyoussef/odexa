@@ -69,3 +69,9 @@ entries. Tests keep frozen v0.1.0 DDL under test resources; production loads onl
 
 References: [Spring Boot database initialization](https://docs.spring.io/spring-boot/how-to/data-initialization.html)
 and [Flyway baseline safety](https://documentation.red-gate.com/fd/flyway-baseline-on-migrate-setting-277578974.html).
+
+Payment V3 preserves the simulator provider on all existing rows and adds refund work and
+provider notification inboxes. Simulator V2 adds fault scenarios, refunds and durable callback
+delivery. Order V4 widens opaque payment references without changing existing order states.
+All migrations released in v0.2.0 remain unchanged. Before upgrading, rerun local bootstrap
+to append the independent simulator signing credential; existing credentials are preserved.

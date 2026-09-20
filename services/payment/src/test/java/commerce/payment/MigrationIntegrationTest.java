@@ -52,6 +52,25 @@ class MigrationIntegrationTest {
         assertEquals(0, Flyway.configure().dataSource(source).load().migrate().migrationsExecuted);
     }
 
+    @Test void releasedV020UpgradePreservesAllFinancialStatesAndProviderIdentity() {
+        var source = isolated();
+        Flyway.configure().dataSource(source).target("2").load().migrate();
+        var jdbc = new JdbcTemplate(source);
+        for (String state : java.util.List.of("AUTHORIZED", "DECLINED", "REVIEW_REQUIRED")) {
+            jdbc.update("""
+                    INSERT INTO payment(id,tenant_id,order_id,customer_id,amount_minor,currency,payment_method,
+                        status,provider_id,reservation_event_id,correlation_id)
+                    VALUES (?, ?, ?, 'owner', 2500, 'USD', 'pm_approved', ?, ?, ?, ?)
+                    """, UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), state,
+                    state.equals("REVIEW_REQUIRED") ? null : UUID.randomUUID().toString(), UUID.randomUUID(), UUID.randomUUID().toString());
+        }
+        var before = jdbc.queryForList("SELECT id, status, provider_id FROM payment ORDER BY id");
+        var upgraded = Flyway.configure().dataSource(source).load(); upgraded.migrate(); upgraded.validate();
+        assertEquals(before, jdbc.queryForList("SELECT id, status, provider_id FROM payment ORDER BY id"));
+        assertEquals(3, jdbc.queryForObject("SELECT count(*) FROM payment WHERE provider='simulator'", Integer.class));
+        assertEquals(0, upgraded.migrate().migrationsExecuted);
+    }
+
     private static DriverManagerDataSource isolated() {
         var root = new DriverManagerDataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
         String schema = "migration_" + UUID.randomUUID().toString().replace("-", "");

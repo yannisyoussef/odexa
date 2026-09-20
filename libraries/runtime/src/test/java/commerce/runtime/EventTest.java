@@ -69,7 +69,7 @@ class EventTest {
     @Test
     void allowsOnlyDocumentedNonOwnedTypesRatherThanSilentlyAcceptingUnknownEvents() {
         for (String type : new String[]{"order.created", "inventory.reserved", "inventory.rejected",
-                "payment.authorized", "payment.declined", "order.confirmed", "order.rejected", "order.cancelled", "order.expired"}) {
+                "payment.authorized", "payment.declined", "order.confirmed", "order.rejected", "order.cancelled", "order.expired", "payment.refunded", "refund.failed"}) {
             ObjectNode json = mapper.valueToTree(sample());
             json.put("eventType", type);
             assertThat(mapper.readValue(mapper.writeValueAsString(json), Event.class).eventType()).isEqualTo(type);

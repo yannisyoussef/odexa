@@ -20,7 +20,7 @@ public record ReservedPayment(UUID orderId, String customerId, long totalMinor,
         String customer = text(node, "customerId", 255);
         String currency = text(node, "currency", 3);
         String method = text(node, "paymentMethod", 128);
-        if (!"USD".equals(currency) || !("pm_approved".equals(method) || "pm_declined".equals(method))) {
+        if (!"USD".equals(currency) || !method.matches("pm_[A-Za-z0-9_]{1,125}")) {
             throw invalid();
         }
         return new ReservedPayment(orderId, customer, total.longValue(), currency, method);

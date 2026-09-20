@@ -68,8 +68,26 @@ Direct `./gradlew integrationTest` skips Testcontainers when Docker is absent; t
 
 ## Current limits
 
-This is a working initial slice, **not production-ready commerce**. Checkout is single-product/USD. Merchant-created products need inventory provisioning; free checkout is rejected before persistence. Refunds, cancellation after dispatch, reservation expiry and fulfilment are not implemented. Cancellation before dispatch has a deliberately small window. Expiry applies only to never-dispatched checkout; dispatched CREATED orders await inventory delivery/operator recovery. Unknown payments retain stock and eventually require manual review; there is no reconciliation UI/API yet.
+This is a working initial slice, **not production-ready commerce**. Checkout is single-product/USD. Merchant-created products need inventory provisioning; free checkout is rejected before persistence. Partial refunds, cancellation after dispatch, reservation expiry and fulfilment are not implemented. Cancellation before dispatch has a deliberately small window. Expiry applies only to never-dispatched checkout; dispatched CREATED orders await inventory delivery/operator recovery. Unknown payments retain stock during automatic provider reconciliation; unresolved cases remain REVIEW_REQUIRED, with no support UI yet.
 
-Stripe Test Mode integration, signed webhooks and richer delayed/faulting provider scenarios remain next steps. So do outbox/inbox retention, authenticated Kafka transport/ACLs, production OIDC provisioning, telemetry export and full standards-based contract validation. Versioned migrations support fresh databases and explicit v0.1.0 upgrades; old orders start their public history with a labelled migration snapshot.
+Future work includes outbox/inbox retention, authenticated Kafka transport/ACLs, production OIDC provisioning, telemetry export and full standards-based contract validation. Versioned migrations support fresh databases and explicit v0.1.0 upgrades; old orders start their public history with a labelled migration snapshot.
 
 No frontend, mobile app, external QA repositories, Redis cache, RabbitMQ jobs, object storage or cloud deployment is scaffolded without a workflow that needs it.
+
+## Payment providers and full refunds
+
+Payments support the default independent HTTP simulator and an explicitly enabled Stripe
+Test Mode adapter. Signed webhooks durably schedule provider reconciliation; unknown outcomes
+retain reservations. Same-tenant merchants can request idempotent full financial refunds, and
+customers can read their own refund resources. Refunds do not restore inventory or rewrite
+a confirmed checkout outcome. See the [payment guide](services/payment/README.md),
+[simulator scenarios](services/payment-simulator/README.md), and [ADR 004](docs/adr/004-payment-providers-and-financial-refunds.md).
+
+Run local bootstrap again after upgrading to add the independent simulator signing secret
+without rotating existing credentials. All existing databases are upgraded by append-only
+Flyway migrations. Deploy all event consumers together because two new financial event types
+are now recognized. Default development and CI need no Stripe keys or internet access to Stripe.
+
+This remains Test Mode commerce: no live-money certification, frontend authentication flow,
+partial refunds, fulfilment, returns, multi-item checkout, production identity provisioning,
+Kafka TLS/ACLs, cloud deployment, support UI, or accounting ledger.

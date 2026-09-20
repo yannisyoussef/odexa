@@ -34,27 +34,42 @@ public class SimulatorPayments {
                 || !stored.paymentMethod().equals(request.paymentMethod())) {
             throw new ProviderProblem(409, "IDEMPOTENCY_CONFLICT", "Key was already used for a different payment");
         }
-        return new Created(new Result(stored.id(), stored.status()), inserted == 1);
+        if (inserted == 1) jdbc.update("INSERT INTO provider_delivery(id, object_id, event_type) VALUES (?, ?, ?)",
+                UUID.randomUUID(), stored.id(), "payment.updated");
+        return new Created(new Result(stored.id(), stored.status(), key, stored.amountMinor(), stored.currency()), inserted == 1);
     }
 
     @Transactional(readOnly = true)
     public Result get(UUID id) {
-        return jdbc.query("SELECT id, status FROM provider_payment WHERE id = ?",
-                (rs, row) -> new Result(rs.getObject("id", UUID.class), rs.getString("status")), id)
+        return jdbc.query("SELECT * FROM provider_payment WHERE id = ?",
+                (rs, row) -> result(rs), id)
                 .stream().findFirst().orElseThrow(() ->
                         new ProviderProblem(404, "PROVIDER_PAYMENT_NOT_FOUND", "Provider payment not found"));
     }
 
+    @Transactional(readOnly = true)
+    public Result byOrder(UUID order) {
+        return jdbc.query("SELECT * FROM provider_payment WHERE order_id = ?", (rs, row) -> result(rs), order)
+                .stream().findFirst().orElseThrow(() -> new ProviderProblem(404, "PROVIDER_PAYMENT_NOT_FOUND", "Payment not found"));
+    }
+    private static Result result(java.sql.ResultSet rs) throws java.sql.SQLException {
+        return new Result(rs.getObject("id", UUID.class), rs.getString("status"), rs.getObject("order_id", UUID.class),
+                rs.getLong("amount_minor"), rs.getString("currency"));
+    }
     static String decision(String method) {
-        if ("pm_approved".equals(method)) return "AUTHORIZED";
-        if ("pm_declined".equals(method)) return "DECLINED";
-        throw new ProviderProblem(400, "INVALID_PAYMENT_METHOD", "Unsupported sandbox payment method");
+        if (method == null) throw new ProviderProblem(400, "INVALID_PAYMENT_METHOD", "Unsupported sandbox payment method");
+        return switch (method) {
+            case "pm_approved", "pm_lost_response", "pm_refund_declined", "pm_refund_unknown", "pm_refund_lost" -> "AUTHORIZED";
+            case "pm_declined", "pm_reconcile_declined" -> "DECLINED";
+            case "pm_unknown" -> "REVIEW_REQUIRED";
+            default -> throw new ProviderProblem(400, "INVALID_PAYMENT_METHOD", "Unsupported sandbox payment method");
+        };
     }
 
     public record Request(@NotNull UUID orderId, @Positive long amountMinor,
                           @NotNull @Pattern(regexp = "USD") String currency,
-                          @NotNull @Pattern(regexp = "pm_approved|pm_declined") String paymentMethod) { }
-    public record Result(UUID id, String status) { }
+                          @NotNull @Pattern(regexp = "pm_approved|pm_declined|pm_lost_response|pm_unknown|pm_reconcile_declined|pm_refund_declined|pm_refund_unknown|pm_refund_lost") String paymentMethod) { }
+    public record Result(UUID id, String status, UUID orderId, long amountMinor, String currency) { }
     public record Created(Result result, boolean initial) { }
     private record Stored(UUID id, long amountMinor, String currency, String paymentMethod, String status) { }
 }

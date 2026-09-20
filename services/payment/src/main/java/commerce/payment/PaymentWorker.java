@@ -38,7 +38,8 @@ public class PaymentWorker {
             PaymentProvider.Result result;
             try {
                 // Deliberately outside all store transactions. Idempotency is always the order UUID.
-                result = provider.authorize(claim.request());
+                result = claim.reconciling() ? provider.lookup(claim.request(), claim.providerId())
+                        : provider.authorize(claim.request());
                 if (result == null) throw new PaymentProvider.UncertainOutcome();
             } catch (RuntimeException exception) {
                 store.uncertain(claim);

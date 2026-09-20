@@ -18,6 +18,7 @@ repositories {
 }
 
 dependencies {
+	implementation("com.stripe:stripe-java:33.4.2")
 	implementation("org.springframework.boot:spring-boot-starter-flyway")
 	runtimeOnly("org.flywaydb:flyway-database-postgresql")
 	implementation(project(":libraries:runtime"))
@@ -43,4 +44,15 @@ dependencies {
 
 tasks.withType<Test> {
 	useJUnitPlatform()
+}
+
+val stripeTest by sourceSets.creating {
+    compileClasspath += sourceSets.main.get().output + configurations.runtimeClasspath.get()
+    runtimeClasspath += output + compileClasspath
+}
+tasks.register<JavaExec>("stripeTestMode") {
+    group = "verification"
+    description = "Explicit real Stripe Test Mode payment/refund verification (requires STRIPE_API_KEY)."
+    classpath = stripeTest.runtimeClasspath
+    mainClass = "commerce.payment.StripeTestModeVerification"
 }

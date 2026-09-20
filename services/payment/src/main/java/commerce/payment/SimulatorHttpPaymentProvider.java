@@ -67,28 +67,52 @@ public final class SimulatorHttpPaymentProvider implements PaymentProvider {
 
     @Override
     public Result authorize(Request request) {
+        var body = exchange("POST", "/provider/v1/payments", request.orderId().toString(),
+                java.util.Map.of("orderId", request.orderId(), "amountMinor", request.amountMinor(),
+                        "currency", request.currency(), "paymentMethod", request.paymentMethod()), ProviderResponse.class);
+        return payment(body, request);
+    }
+    @Override public Result lookup(Request request, String id) {
+        var body = exchange("GET", "/provider/v1/payments/by-order/" + request.orderId(), null, null, ProviderResponse.class);
+        if (id != null && !id.equals(body.id().toString())) throw new UncertainOutcome();
+        return payment(body, request);
+    }
+    private Result payment(ProviderResponse body, Request request) {
+        if (!request.orderId().equals(body.orderId()) || request.amountMinor() != body.amountMinor()
+                || !request.currency().equals(body.currency())) throw new UncertainOutcome();
+        try { return new Result(body.id().toString(), Outcome.valueOf(body.status())); }
+        catch (RuntimeException failure) { throw new UncertainOutcome(); }
+    }
+    @Override public RefundResult refund(RefundRequest request) {
+        return refund(exchange("POST", "/provider/v1/refunds", request.refundId().toString(),
+                java.util.Map.of("refundId", request.refundId(), "paymentId", request.paymentProviderId(),
+                        "amountMinor", request.amountMinor(), "currency", request.currency()), RefundResponse.class), request);
+    }
+    @Override public RefundResult lookupRefund(RefundRequest request, String id) {
+        var body = exchange("GET", "/provider/v1/refunds/" + request.refundId(), null, null, RefundResponse.class);
+        if (id != null && !id.equals(body.id())) throw new UncertainOutcome();
+        return refund(body, request);
+    }
+    private RefundResult refund(RefundResponse body, RefundRequest request) {
+        if (!request.refundId().equals(body.refundId()) || !request.paymentProviderId().equals(body.paymentId())
+                || request.amountMinor() != body.amountMinor() || !request.currency().equals(body.currency())) throw new UncertainOutcome();
+        try { return new RefundResult(body.id(), RefundOutcome.valueOf(body.status())); }
+        catch (RuntimeException failure) { throw new UncertainOutcome(); }
+    }
+    private <T> T exchange(String method, String path, String key, Object payload, Class<T> type) {
         try {
-            HttpRequest httpRequest = HttpRequest.newBuilder(endpoint)
-                    .timeout(responseTimeout)
-                    .header("Content-Type", "application/json")
-                    .header("Accept", "application/json")
-                    .header(Correlation.HEADER, Correlation.current())
-                    .header("X-Provider-Key", apiKey)
-                    .header("Idempotency-Key", request.orderId().toString())
-                    .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(request))).build();
-            HttpResponse<byte[]> response = sendWithDeadline(httpRequest);
-            if (response.statusCode() != 200 && response.statusCode() != 201) {
-                throw new UncertainOutcome();
-            }
-            ProviderResponse body = mapper.readValue(response.body(), ProviderResponse.class);
-            return new Result(body.id().toString(), Outcome.valueOf(body.status()));
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
-            throw new UncertainOutcome();
-        } catch (IOException | RuntimeException exception) {
-            // Deliberately discard response bodies, request headers and underlying exception messages.
-            throw new UncertainOutcome();
-        }
+            var builder = HttpRequest.newBuilder(endpoint.resolve(path)).timeout(responseTimeout)
+                    .header("Content-Type", "application/json").header("Accept", "application/json")
+                    .header(Correlation.HEADER, Correlation.current()).header("X-Provider-Key", apiKey);
+            if (key != null) builder.header("Idempotency-Key", key);
+            builder.method(method, payload == null ? HttpRequest.BodyPublishers.noBody()
+                    : HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(payload)));
+            HttpResponse<byte[]> response = sendWithDeadline(builder.build());
+            if (response.statusCode() != 200 && response.statusCode() != 201) throw new UncertainOutcome();
+            return mapper.readValue(response.body(), type);
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt(); throw new UncertainOutcome();
+        } catch (IOException | RuntimeException error) { throw new UncertainOutcome(); }
     }
 
     private HttpResponse<byte[]> sendWithDeadline(HttpRequest request) throws IOException, InterruptedException {
@@ -180,5 +204,6 @@ public final class SimulatorHttpPaymentProvider implements PaymentProvider {
         }
     }
 
-    private record ProviderResponse(java.util.UUID id, String status) { }
+    private record ProviderResponse(java.util.UUID id, String status, java.util.UUID orderId, long amountMinor, String currency) { }
+    private record RefundResponse(String id, java.util.UUID refundId, String paymentId, long amountMinor, String currency, String status) { }
 }

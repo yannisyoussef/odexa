@@ -261,11 +261,13 @@ class SimulatorHttpPaymentProviderTest {
         assertNull(error.getCause());
     }
 
-    private static byte[] providerBody(UUID id, PaymentProvider.Outcome outcome) {
-        return ("{\"id\":\"" + id + "\",\"status\":\"" + outcome + "\"}").getBytes(StandardCharsets.UTF_8);
+    private byte[] providerBody(UUID id, PaymentProvider.Outcome outcome) {
+        return new tools.jackson.databind.json.JsonMapper().writeValueAsBytes(java.util.Map.of(
+                "id", id, "status", outcome.name(), "orderId", request.orderId(),
+                "amountMinor", request.amountMinor(), "currency", request.currency()));
     }
 
-    private static byte[] paddedBody(UUID id, PaymentProvider.Outcome outcome, int length) {
+    private byte[] paddedBody(UUID id, PaymentProvider.Outcome outcome, int length) {
         String json = new String(providerBody(id, outcome), StandardCharsets.UTF_8);
         return (json + " ".repeat(length - json.length())).getBytes(StandardCharsets.UTF_8);
     }

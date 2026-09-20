@@ -7,7 +7,7 @@ import tools.jackson.databind.JsonNode;
 
 /** Reject malformed/unknown events so the runtime's bounded retry and DLT policy can recover them. */
 final class OrderEventDecoder {
-    private static final Set<String> IGNORED = Set.of("order.created", "order.confirmed", "order.rejected", "order.cancelled", "order.expired");
+    private static final Set<String> IGNORED = Set.of("order.created", "order.confirmed", "order.rejected", "order.cancelled", "order.expired", "payment.refunded", "refund.failed");
 
     private OrderEventDecoder() { }
 
@@ -37,7 +37,7 @@ final class OrderEventDecoder {
                 long total = number(payload, "totalMinor");
                 if (customer.length() > 255 || quantity < 1 || quantity > 100 || total <= 0
                         || !"USD".equals(currency)
-                        || !("pm_approved".equals(method) || "pm_declined".equals(method))) {
+                        || !method.matches("pm_[A-Za-z0-9_]{1,125}")) {
                     throw invalid();
                 }
                 if (payload.has("reservationId") && !orderId.equals(uuid(text(payload, "reservationId")))) {
