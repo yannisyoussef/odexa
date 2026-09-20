@@ -38,6 +38,31 @@ class CatalogPostgresIntegrationTest {
         service = new CatalogService(jdbc);
     }
 
+    @Test void batchReadsOneSnapshotDuringConcurrentCatalogChangeAndHidesForeignIds() throws Exception {
+        Product a = service.create(tenant,input("A")), b = service.create(tenant,input("B"));
+        Product foreign = service.create(UUID.randomUUID(),input("Foreign"));
+        for (UUID unavailable : java.util.List.of(foreign.id(),UUID.randomUUID())) {
+            var error = assertThrows(ApiException.class,() -> service.batch(tenant,java.util.List.of(a.id(),unavailable)));
+            assertEquals(404,error.status()); assertEquals("PRODUCT_NOT_FOUND",error.code());
+        }
+        var updatedButUncommitted = new CountDownLatch(1); var release = new CountDownLatch(1);
+        var tx = new org.springframework.transaction.support.TransactionTemplate(new org.springframework.jdbc.datasource.DataSourceTransactionManager(jdbc.getDataSource()));
+        try (var executor = Executors.newSingleThreadExecutor()) {
+            var future = executor.submit(() -> tx.executeWithoutResult(status -> {
+                jdbc.update("UPDATE product SET unit_price_minor = 9000, version = version + 1 WHERE tenant_id = ?",tenant);
+                updatedButUncommitted.countDown();
+                try { assertTrue(release.await(10,TimeUnit.SECONDS)); } catch (InterruptedException e) { throw new AssertionError(e); }
+            }));
+            assertTrue(updatedButUncommitted.await(10,TimeUnit.SECONDS));
+            try {
+                var accepted = service.batch(tenant,java.util.List.of(b.id(),a.id()));
+                assertTrue(accepted.stream().allMatch(p -> p.unitPriceMinor() == a.unitPriceMinor()));
+            } finally { release.countDown(); }
+            future.get(10,TimeUnit.SECONDS);
+        }
+        assertTrue(service.batch(tenant,java.util.List.of(a.id(),b.id())).stream().allMatch(p -> p.unitPriceMinor() == 9000));
+    }
+
     @Test
     void keysetPaginationSearchAndCrossTenantIsolation() {
         UUID otherTenant = UUID.randomUUID();

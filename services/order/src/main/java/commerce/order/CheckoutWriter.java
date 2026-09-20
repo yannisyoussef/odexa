@@ -26,8 +26,9 @@ public class CheckoutWriter {
         if (inserted) {
             orders.recordHistory(order, order.createdAt(), "ORDER_CREATED");
             CheckoutSnapshot s = order.snapshot();
-            outbox.append("order.created", order.tenantId(), order.id().toString(),
-                    new OrderCreated(order.id(), order.customerId(), s.productId(), s.quantity(),
+            outbox.append("order.created", 2, order.tenantId(), order.id().toString(),
+                    new OrderCreated(order.id(), order.customerId(), s.items().stream()
+                            .map(i -> new CheckoutRequest.Item(i.productId(), i.quantity())).toList(),
                             s.totalMinor(), s.currency(), s.paymentMethod()), null);
         }
         return new Result(order, inserted);
@@ -41,6 +42,6 @@ public class CheckoutWriter {
     }
 
     public record Result(Order order, boolean created) { }
-    public record OrderCreated(UUID orderId, String customerId, UUID productId, int quantity,
+    public record OrderCreated(UUID orderId, String customerId, java.util.List<CheckoutRequest.Item> items,
                                long totalMinor, String currency, String paymentMethod) { }
 }

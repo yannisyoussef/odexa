@@ -52,6 +52,29 @@ class PaymentPersistenceIntegrationTest {
 
     @BeforeEach void clean() { jdbc.execute("TRUNCATE refund, provider_event, payment, inbox, outbox"); }
 
+    @Test void basketUsesOneTotalThroughUncertaintyReconciliationAndFullRefund() {
+        UUID order = UUID.randomUUID();
+        Event event = new Event(UUID.randomUUID(),"inventory.reserved",2,Instant.now(),UUID.randomUUID().toString(),UUID.randomUUID(),tenant,
+                mapper.valueToTree(Map.of("orderId",order,"customerId","customer-a","items",java.util.List.of(
+                    Map.of("productId",UUID.randomUUID(),"quantity",2),Map.of("productId",UUID.randomUUID(),"quantity",3)),
+                    "totalMinor",8000,"currency","USD","paymentMethod","pm_unknown")));
+        consumer.receive(mapper.writeValueAsString(event)); consumer.receive(mapper.writeValueAsString(event));
+        assertEquals(1,count("payment"));
+        var claim = store.claim().orElseThrow(); assertEquals(8000,claim.request().amountMinor());
+        store.complete(claim,new PaymentProvider.Result("basket-provider",PaymentProvider.Outcome.REVIEW_REQUIRED));
+        assertEquals(0,count("outbox")); assertEquals("REVIEW_REQUIRED",store.get(tenant,"customer-a",order).status());
+        events.accept("simulator","basket-event","payment.updated","basket-provider");
+        var lookup = store.claim().orElseThrow(); assertEquals(8000,lookup.request().amountMinor());
+        store.complete(lookup,new PaymentProvider.Result("basket-provider",PaymentProvider.Outcome.AUTHORIZED));
+        assertEquals(1,count("outbox"));
+        assertEquals(409,assertThrows(ApiException.class,() -> refunds.create(merchant(),order,"partial",5000,"USD")).status());
+        var refund = refunds.create(merchant(),order,"full",8000,"USD");
+        var refundClaim = refunds.claim().orElseThrow(); assertEquals(8000,refundClaim.request().amountMinor());
+        refunds.complete(refundClaim,new PaymentProvider.RefundResult("basket-refund",PaymentProvider.RefundOutcome.SUCCEEDED));
+        assertEquals(refund.view().id(),refunds.create(merchant(),order,"full",8000,"USD").view().id());
+        assertEquals(2,count("outbox"));
+    }
+
     @Test void concurrentDuplicateDeliveryCreatesExactlyOneInboxAndDurableJob() throws Exception {
         String raw = raw(UUID.randomUUID(), UUID.randomUUID(), 2500);
         concurrently(24, () -> { consumer.receive(raw); return true; });

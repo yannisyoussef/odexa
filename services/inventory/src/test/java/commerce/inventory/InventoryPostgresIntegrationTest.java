@@ -177,7 +177,7 @@ class InventoryPostgresIntegrationTest {
     void outboxFailureRollsBackInboxStockAndReservationThenRedeliverySucceeds() {
         Outbox failing = mock(Outbox.class);
         doThrow(new IllegalStateException("injected outbox failure")).when(failing)
-                .append(anyString(), any(), anyString(), any(), any());
+                .append(anyString(), eq(2), any(), anyString(), any(), any());
         var broken = new InventoryEvents(mapper, new Inbox(jdbc), new ReservationService(jdbc, failing));
         Event event = created(order(UUID.randomUUID(), 3));
         assertThrows(IllegalStateException.class,
@@ -245,7 +245,7 @@ class InventoryPostgresIntegrationTest {
         receive(created(order));
         assertEquals("REJECTED", reservationState(order.orderId()));
         assertEquals(0, stock.get(tenant, product).reserved());
-        Event otherTenant = new Event(UUID.randomUUID(), "order.created", 1, Instant.now(),
+        Event otherTenant = new Event(UUID.randomUUID(), "order.created", 2, Instant.now(),
                 UUID.randomUUID().toString(), null, UUID.randomUUID(), mapper.valueToTree(order(UUID.randomUUID(), 1)));
         receive(otherTenant);
         assertEquals(0, stock.get(tenant, product).reserved());
@@ -263,6 +263,77 @@ class InventoryPostgresIntegrationTest {
                 UUID.fromString("22222222-2222-4222-8222-222222222222")).onHand());
     }
 
+    @Test void basketRejectionLeavesEveryStockVersionUntouchedAndMissingForeignStockIsHidden() {
+        UUID b = addStock(1);
+        Stock before = stock.get(tenant,product); Stock other = stock.get(tenant,b);
+        var rejected = basket(new OrderCreated.Line(product,2),new OrderCreated.Line(b,2));
+        receive(created(rejected)); receive(created(rejected));
+        assertEquals("REJECTED",reservationState(rejected.orderId()));
+        assertEquals(before,stock.get(tenant,product)); assertEquals(other,stock.get(tenant,b));
+        var missing = basket(new OrderCreated.Line(product,1),new OrderCreated.Line(UUID.randomUUID(),1));
+        receive(created(missing));
+        assertEquals("REJECTED",reservationState(missing.orderId()));
+        assertEquals(before,stock.get(tenant,product));
+        assertEquals(2,count("SELECT count(*) FROM outbox WHERE tenant_id = ?"));
+    }
+
+    @Test void reverseOverlappingBasketsReserveWithoutDeadlockOrPartialHolds() throws Exception {
+        UUID b = addStock(10);
+        var first = basket(new OrderCreated.Line(product,7),new OrderCreated.Line(b,7));
+        var second = basket(new OrderCreated.Line(b,6),new OrderCreated.Line(product,6));
+        concurrently(List.of(() -> receive(created(first)),() -> receive(created(second))));
+        long held = stock.get(tenant,product).reserved();
+        assertTrue(held == 6 || held == 7); assertEquals(held,stock.get(tenant,b).reserved());
+        assertEquals(2,stock.get(tenant,product).version()); assertEquals(2,stock.get(tenant,b).version());
+        assertEquals(1,count("SELECT count(*) FROM inventory_reservation WHERE tenant_id = ? AND state = 'RESERVED'"));
+        assertEquals(1,count("SELECT count(*) FROM inventory_reservation WHERE tenant_id = ? AND state = 'REJECTED'"));
+    }
+
+    @Test void severalPartiallyOverlappingBasketsAndConcurrentDuplicatesHaveExactHolds() throws Exception {
+        UUID b = addStock(10); UUID c = addStock(10);
+        var baskets = List.of(basket(new OrderCreated.Line(product,4),new OrderCreated.Line(b,4)),
+                basket(new OrderCreated.Line(b,4),new OrderCreated.Line(c,4)),
+                basket(new OrderCreated.Line(c,4),new OrderCreated.Line(product,4)),
+                basket(new OrderCreated.Line(product,4),new OrderCreated.Line(b,4),new OrderCreated.Line(c,4)));
+        List<Runnable> work = new ArrayList<>();
+        for (var order : baskets) { var event = created(order); work.add(() -> receive(event)); work.add(() -> receive(event)); }
+        concurrently(work);
+        for (UUID id : List.of(product,b,c)) {
+            long expected = jdbc.queryForObject("""
+                    SELECT COALESCE(sum(l.quantity),0) FROM reservation_line l JOIN inventory_reservation r
+                    USING(tenant_id,order_id) WHERE l.tenant_id = ? AND l.product_id = ? AND r.state = 'RESERVED'
+                    """,Long.class,tenant,id);
+            assertEquals(expected,stock.get(tenant,id).reserved()); assertTrue(expected <= 10);
+        }
+        assertEquals(4,count("SELECT count(*) FROM outbox WHERE tenant_id = ?"));
+    }
+
+    @Test void basketAuthorizationDeclineAndDuplicateOutcomesSettleEveryLineOnce() throws Exception {
+        UUID b = addStock(10);
+        var order = basket(new OrderCreated.Line(b,3),new OrderCreated.Line(product,2));
+        var event = created(order);
+        concurrently(List.of(() -> receive(event),() -> receive(event),() -> receive(created(order))));
+        assertEquals(2,stock.get(tenant,product).reserved()); assertEquals(3,stock.get(tenant,b).reserved());
+        // Unknown provider outcome publishes nothing: all holds remain until a definitive result.
+        concurrently(List.of(() -> receive(payment(order.orderId(),true)),() -> receive(payment(order.orderId(),true))));
+        receive(payment(order.orderId(),false));
+        assertEquals(8,stock.get(tenant,product).onHand()); assertEquals(7,stock.get(tenant,b).onHand());
+        var decline = basket(new OrderCreated.Line(product,2),new OrderCreated.Line(b,3));
+        receive(created(decline));
+        concurrently(List.of(() -> receive(payment(decline.orderId(),false)),() -> receive(payment(decline.orderId(),false))));
+        receive(payment(decline.orderId(),true));
+        assertEquals(8,stock.get(tenant,product).onHand()); assertEquals(7,stock.get(tenant,b).onHand());
+        assertEquals(0,stock.get(tenant,product).reserved()); assertEquals(0,stock.get(tenant,b).reserved());
+        assertEquals(5,stock.get(tenant,product).version()); assertEquals(5,stock.get(tenant,b).version());
+    }
+
+    private UUID addStock(long amount) {
+        UUID id = UUID.randomUUID(); jdbc.update("INSERT INTO inventory_stock(tenant_id,product_id,on_hand) VALUES(?,?,?)",tenant,id,amount); return id;
+    }
+    private OrderCreated basket(OrderCreated.Line... lines) {
+        return new OrderCreated(UUID.randomUUID(),"customer",List.of(lines),8000,"USD","pm_approved");
+    }
+
     private int count(String sql) {
         return jdbc.queryForObject(sql, Integer.class, tenant);
     }
@@ -277,7 +348,7 @@ class InventoryPostgresIntegrationTest {
     }
 
     private Event created(OrderCreated order) {
-        return new Event(UUID.randomUUID(), "order.created", 1, Instant.now(), UUID.randomUUID().toString(),
+        return new Event(UUID.randomUUID(), "order.created", 2, Instant.now(), UUID.randomUUID().toString(),
                 null, tenant, mapper.valueToTree(order));
     }
 

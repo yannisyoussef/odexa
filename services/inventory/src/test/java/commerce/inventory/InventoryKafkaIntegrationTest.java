@@ -128,7 +128,7 @@ class InventoryKafkaIntegrationTest {
     }
 
     private Event event(String type, UUID tenant, Object payload, UUID causationId) {
-        return new Event(UUID.randomUUID(), type, 1, Instant.now(), UUID.randomUUID().toString(), causationId,
+        return new Event(UUID.randomUUID(), type, type.equals("order.created") ? 2 : 1, Instant.now(), UUID.randomUUID().toString(), causationId,
                 tenant, mapper.valueToTree(payload));
     }
 

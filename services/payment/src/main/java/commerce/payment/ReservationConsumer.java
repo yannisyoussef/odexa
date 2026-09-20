@@ -30,7 +30,7 @@ public class ReservationConsumer {
         try {
             event = mapper.readValue(raw, Event.class);
             if (event == null || event.eventId() == null || event.tenantId() == null
-                    || event.occurredAt() == null || event.eventType() == null || event.eventVersion() != 1
+                    || event.occurredAt() == null || event.eventType() == null || !Event.supports(event.eventType(), event.eventVersion())
                     || event.correlationId() == null
                     || !UUID.fromString(event.correlationId()).toString().equalsIgnoreCase(event.correlationId())) {
                 throw new IllegalArgumentException();
@@ -43,7 +43,7 @@ public class ReservationConsumer {
         if (!"inventory.reserved".equals(event.eventType())) {
             throw new IllegalArgumentException("Unsupported payment event type");
         }
-        ReservedPayment payment = ReservedPayment.parse(event.payload());
+        ReservedPayment payment = ReservedPayment.parse(event.payload(), event.eventVersion());
         if (inbox.first(event.eventId(), "payment.inventory-reserved.v1")) {
             store.enqueue(event, payment); // Same JDBC transaction as the inbox insertion.
         }

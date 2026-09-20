@@ -26,6 +26,17 @@ public class CatalogService {
                 .orElseThrow(() -> new ApiException(404, "PRODUCT_NOT_FOUND", "Product not found"));
     }
 
+    /** One statement sees one PostgreSQL snapshot across every requested product. */
+    public List<Product> batch(UUID tenantId, List<UUID> ids) {
+        String placeholders = String.join(",", java.util.Collections.nCopies(ids.size(), "?"));
+        List<Object> args = new java.util.ArrayList<>();
+        args.add(tenantId); args.addAll(ids);
+        List<Product> products = jdbc.query("SELECT * FROM product WHERE tenant_id = ? AND id IN ("
+                + placeholders + ") ORDER BY id", PRODUCT, args.toArray());
+        if (products.size() != ids.size()) throw new ApiException(404, "PRODUCT_NOT_FOUND", "Product not found");
+        return products;
+    }
+
     public ProductPage list(UUID tenantId, int limit, String cursor, String query) {
         if (limit < 1 || limit > 100 || (query != null && query.length() > 200)) {
             throw new ApiException(400, "INVALID_QUERY", "Limit must be 1..100 and search at most 200 characters");

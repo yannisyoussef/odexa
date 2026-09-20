@@ -10,7 +10,7 @@ import com.fasterxml.jackson.annotation.JsonFormat;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import tools.jackson.databind.JsonNode;
 
-/** Version-one transport envelope; business payload validation belongs to each owning listener. */
+/** Versioned transport envelope; business payload validation belongs to each owning listener. */
 @JsonIgnoreProperties(ignoreUnknown = false)
 public record Event(UUID eventId, String eventType, int eventVersion,
         @JsonFormat(shape = JsonFormat.Shape.STRING) Instant occurredAt,
@@ -20,8 +20,8 @@ public record Event(UUID eventId, String eventType, int eventVersion,
 
     @JsonCreator(mode = JsonCreator.Mode.DISABLED)
     public Event {
-        // Fixed initial contract. Unknown types/versions fail closed and must reach the DLT.
-        if (eventId == null || eventType == null || !TYPES.contains(eventType) || eventVersion != 1
+        // Explicit per-type versions. Unknown types/versions fail closed and must reach the DLT.
+        if (eventId == null || eventType == null || !TYPES.contains(eventType) || !supports(eventType, eventVersion)
                 || occurredAt == null || !Correlation.isUuid(correlationId) || tenantId == null
                 || payload == null || !payload.isObject()) {
             throw invalid();
@@ -35,17 +35,22 @@ public record Event(UUID eventId, String eventType, int eventVersion,
             throw invalid();
         }
         JsonNode version = json.get("eventVersion");
-        if (version == null || !version.isIntegralNumber() || !version.canConvertToInt() || version.asInt() != 1) {
+        if (version == null || !version.isIntegralNumber() || !version.canConvertToInt() || !supports(text(json, "eventType"), version.asInt())) {
             throw invalid();
         }
         try {
-            return new Event(uuid(json, "eventId"), text(json, "eventType"), 1,
+            return new Event(uuid(json, "eventId"), text(json, "eventType"), version.asInt(),
                     Instant.parse(text(json, "occurredAt")), text(json, "correlationId"),
                     json.hasNonNull("causationId") ? uuid(json, "causationId") : null,
                     uuid(json, "tenantId"), json.get("payload"));
         } catch (DateTimeParseException exception) {
             throw invalid();
         }
+    }
+
+    public static boolean supports(String type, int version) {
+        return TYPES.contains(type) && (version == 1 || (version == 2
+                && ("order.created".equals(type) || "inventory.reserved".equals(type))));
     }
 
     private static String text(JsonNode json, String name) {

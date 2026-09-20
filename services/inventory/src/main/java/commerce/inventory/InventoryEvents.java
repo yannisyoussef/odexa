@@ -47,7 +47,7 @@ public class InventoryEvents {
         UUID orderId;
         switch (event.eventType()) {
             case "order.created" -> {
-                order = readOrder(event.payload());
+                order = readOrder(event.payload(), event.eventVersion());
                 orderId = order.orderId();
             }
             case "payment.authorized", "payment.declined" -> {
@@ -81,7 +81,7 @@ public class InventoryEvents {
     }
 
     private static void validateEnvelope(Event event) {
-        if (event == null || event.eventVersion() != 1 || event.eventId() == null || event.tenantId() == null
+        if (event == null || !Event.supports(event.eventType(), event.eventVersion()) || event.eventId() == null || event.tenantId() == null
                 || event.occurredAt() == null || event.eventType() == null || event.payload() == null
                 || !event.payload().isObject()) {
             throw new IllegalArgumentException("Invalid event envelope or unsupported version");
@@ -89,17 +89,33 @@ public class InventoryEvents {
         uuid(event.correlationId());
     }
 
-    static OrderCreated readOrder(JsonNode payload) {
+    static OrderCreated readOrder(JsonNode payload) { return readOrder(payload, 1); }
+
+    static OrderCreated readOrder(JsonNode payload, int version) {
         UUID orderId = uuid(text(payload, "orderId", 36));
-        UUID productId = uuid(text(payload, "productId", 36));
-        long quantity = number(payload, "quantity");
+        var lines = new java.util.ArrayList<OrderCreated.Line>();
+        if (version == 1) {
+            if (payload.has("items")) throw new IllegalArgumentException("Unexpected v1 basket");
+            lines.add(line(payload));
+        } else {
+            JsonNode items = payload.get("items");
+            if (items == null || !items.isArray() || items.isEmpty() || items.size() > 20
+                    || payload.has("productId") || payload.has("quantity")) throw new IllegalArgumentException("Invalid basket");
+            for (JsonNode item : items) lines.add(line(item));
+        }
         long total = number(payload, "totalMinor");
         String currency = text(payload, "currency", 3);
-        if (quantity < 1 || quantity > 100 || total < 0 || !"USD".equals(currency)) {
+        if (total < 0 || (version == 2 && total == 0) || !"USD".equals(currency)) {
             throw new IllegalArgumentException("Invalid order quantity, amount or currency");
         }
-        return new OrderCreated(orderId, text(payload, "customerId", 255), productId, (int) quantity,
+        return new OrderCreated(orderId, text(payload, "customerId", 255), lines,
                 total, currency, text(payload, "paymentMethod", 200));
+    }
+
+    private static OrderCreated.Line line(JsonNode node) {
+        long quantity = number(node, "quantity");
+        if (quantity < 1 || quantity > 100) throw new IllegalArgumentException("Invalid quantity");
+        return new OrderCreated.Line(uuid(text(node, "productId", 36)), (int) quantity);
     }
 
     private static long number(JsonNode node, String field) {

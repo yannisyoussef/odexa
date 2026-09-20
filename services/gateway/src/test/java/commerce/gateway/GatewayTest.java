@@ -58,6 +58,24 @@ class GatewayTest {
                 .addFilters(new EdgeFilter(routes, 100, 200, 32)).build();
     }
 
+    @Test void maximumBasketFitsExistingBodyLimitAndPrivateBatchCannotBeRouted() throws Exception {
+        Routes routes = new Routes(base,base,base,base);
+        var edge = MockMvcBuilders.standaloneSetup(new ProxyController(routes,32768,1024))
+                .addFilters(new EdgeFilter(routes,100,200,32768)).build();
+        String items = java.util.stream.IntStream.range(0,20).mapToObj(i ->
+                "{\"productId\":\"" + java.util.UUID.randomUUID() + "\",\"quantity\":100}")
+                .collect(java.util.stream.Collectors.joining(","));
+        String basket = "{\"items\":[" + items + "],\"paymentMethod\":\"pm_" + "a".repeat(125) + "\"}";
+        assertTrue(basket.getBytes(StandardCharsets.UTF_8).length < 2000);
+        edge.perform(post("/api/v1/orders").contentType("application/json").content(basket)).andExpect(status().isCreated());
+        edge.perform(post("/api/v1/orders").contentType("application/json").content(basket + " ".repeat(32768-basket.length())))
+                .andExpect(status().isCreated());
+        edge.perform(post("/api/v1/orders").contentType("application/json").content(basket + " ".repeat(32769-basket.length())))
+                .andExpect(status().is(413));
+        edge.perform(post("/internal/v1/products/batch").content("{}")).andExpect(status().isNotFound());
+        assertEquals(2,calls.get());
+    }
+
     @AfterEach
     void stop() {
         server.stop(0);

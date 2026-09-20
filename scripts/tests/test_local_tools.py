@@ -97,6 +97,25 @@ class ContractTests(unittest.TestCase):
         with self.assertRaises(contract_check.ContractError):
             contract_check.validate({}, {"if": {}}, self.source)
 
+    def test_basket_event_versions_and_checkout_compatibility(self):
+        schema, target = contract_check.resolve("#/components/messages/OrderCreatedV2/payload", self.source)
+        payload = {"eventId": str(uuid4()), "eventType": "order.created", "eventVersion": 2,
+                   "occurredAt": "2026-01-01T00:00:00Z", "correlationId": str(uuid4()), "tenantId": str(uuid4()),
+                   "payload": {"orderId": str(uuid4()), "customerId": "owner", "items": [{"productId": str(uuid4()), "quantity": 2}],
+                               "totalMinor": 5000, "currency": "USD", "paymentMethod": "pm_approved"}}
+        contract_check.validate(payload, schema, target)
+        with self.assertRaises(contract_check.ContractError):
+            contract_check.validate({**payload, "eventVersion": 1}, schema, target)
+        source = contract_check.ROOT / "contracts/openapi/order.json"
+        checkout = contract_check.load(source)["components"]["schemas"]["CheckoutRequest"]
+        legacy = {"productId": str(uuid4()), "quantity": 1, "paymentMethod": "pm_approved"}
+        basket = {"items": [{"productId": legacy["productId"], "quantity": 1}], "paymentMethod": "pm_approved"}
+        for valid in (legacy, basket):
+            contract_check.validate(valid, checkout, source)
+        for invalid in ({**legacy, **basket}, {**basket, "totalMinor": 1}, {**basket, "items": []}):
+            with self.assertRaises(contract_check.ContractError):
+                contract_check.validate(invalid, checkout, source)
+
     def test_event_payload_envelope_and_kind_are_validated(self):
         schema, target = contract_check.resolve("#/components/messages/OrderCreated/payload", self.source)
         payload = {"eventId": str(uuid4()), "eventType": "order.created", "eventVersion": 1,

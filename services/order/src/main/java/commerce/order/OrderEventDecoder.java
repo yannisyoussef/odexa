@@ -13,7 +13,7 @@ final class OrderEventDecoder {
 
     static Decoded decode(Event event) {
         if (event == null || event.eventId() == null || event.tenantId() == null
-                || event.eventVersion() != 1 || event.eventType() == null || event.occurredAt() == null
+                || !Event.supports(event.eventType(), event.eventVersion()) || event.eventType() == null || event.occurredAt() == null
                 || event.payload() == null || !event.payload().isObject()) {
             throw invalid();
         }
@@ -29,13 +29,23 @@ final class OrderEventDecoder {
         UUID orderId = uuid(text(payload, "orderId"));
         return switch (event.eventType()) {
             case "inventory.reserved" -> {
-                UUID productId = uuid(text(payload, "productId"));
+                var lines = new java.util.ArrayList<CheckoutRequest.Item>();
+                if (event.eventVersion() == 1) {
+                    if (payload.has("items")) throw invalid();
+                    lines.add(line(payload));
+                } else {
+                    JsonNode items = payload.get("items");
+                    if (items == null || !items.isArray() || items.isEmpty() || items.size() > 20
+                            || payload.has("productId") || payload.has("quantity")) throw invalid();
+                    for (JsonNode item : items) lines.add(line(item));
+                }
+                if (lines.stream().map(CheckoutRequest.Item::productId).distinct().count() != lines.size()) throw invalid();
+                lines.sort(java.util.Comparator.comparing(i -> i.productId().toString()));
                 String customer = text(payload, "customerId");
                 String currency = text(payload, "currency");
                 String method = text(payload, "paymentMethod");
-                long quantity = number(payload, "quantity");
                 long total = number(payload, "totalMinor");
-                if (customer.length() > 255 || quantity < 1 || quantity > 100 || total <= 0
+                if (customer.length() > 255 || total <= 0
                         || !"USD".equals(currency)
                         || !method.matches("pm_[A-Za-z0-9_]{1,125}")) {
                     throw invalid();
@@ -44,7 +54,7 @@ final class OrderEventDecoder {
                     throw invalid();
                 }
                 yield new Decoded(event, orderId,
-                        new Reservation(customer, productId, (int) quantity, total, currency, method), null);
+                        new Reservation(customer, java.util.List.copyOf(lines), total, currency, method), null);
             }
             case "inventory.rejected" -> {
                 if (!"INSUFFICIENT_STOCK".equals(text(payload, "reason"))) {
@@ -61,6 +71,12 @@ final class OrderEventDecoder {
             }
             default -> throw invalid();
         };
+    }
+
+    private static CheckoutRequest.Item line(JsonNode node) {
+        long quantity = number(node, "quantity");
+        if (quantity < 1 || quantity > 100) throw invalid();
+        return new CheckoutRequest.Item(uuid(text(node, "productId")), (int) quantity);
     }
 
     private static String text(JsonNode object, String name) {
@@ -102,12 +118,12 @@ final class OrderEventDecoder {
         boolean ignored() { return orderId == null; }
     }
 
-    record Reservation(String customerId, UUID productId, int quantity, long totalMinor,
+    record Reservation(String customerId, java.util.List<CheckoutRequest.Item> items, long totalMinor,
                        String currency, String paymentMethod) {
         boolean matches(Order order) {
             CheckoutSnapshot snapshot = order.snapshot();
-            return customerId.equals(order.customerId()) && productId.equals(snapshot.productId())
-                    && quantity == snapshot.quantity() && totalMinor == snapshot.totalMinor()
+            return customerId.equals(order.customerId()) && items.equals(snapshot.items().stream()
+                    .map(i -> new CheckoutRequest.Item(i.productId(), i.quantity())).toList()) && totalMinor == snapshot.totalMinor()
                     && currency.equals(snapshot.currency()) && paymentMethod.equals(snapshot.paymentMethod());
         }
     }

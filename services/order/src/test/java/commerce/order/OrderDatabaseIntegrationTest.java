@@ -59,14 +59,14 @@ class OrderDatabaseIntegrationTest {
 
     @BeforeEach
     void cleanIsolatedContainerDatabase() {
-        jdbc.execute("TRUNCATE TABLE order_history, customer_order, inbox, outbox");
+        jdbc.execute("TRUNCATE TABLE order_line, order_history, customer_order, inbox, outbox");
     }
 
     @Test
     void concurrentSameKeyHasExactlyOneOrderAndOneOutboxEvent() throws Exception {
         int contenders = 12;
         UUID tenant = UUID.randomUUID();
-        CheckoutSnapshot snapshot = OrderStateMachineTest.created().snapshot();
+        CheckoutSnapshot snapshot = basket();
         String fingerprint = fingerprint(snapshot);
         CyclicBarrier start = new CyclicBarrier(contenders);
         List<CheckoutWriter.Result> results = new ArrayList<>();
@@ -147,7 +147,7 @@ class OrderDatabaseIntegrationTest {
         Order candidate = OrderStateMachineTest.created();
         Outbox failingOutbox = mock(Outbox.class);
         doThrow(new IllegalStateException("simulated outbox failure"))
-                .when(failingOutbox).append(anyString(), any(), anyString(), any(), isNull());
+                .when(failingOutbox).append(anyString(), eq(2), any(), anyString(), any(), isNull());
         CheckoutWriter failingWriter = new CheckoutWriter(orders, failingOutbox);
         TransactionTemplate transaction = new TransactionTemplate(transactionManager);
         assertThrows(IllegalStateException.class, () -> transaction.execute(status ->
@@ -528,12 +528,42 @@ class OrderDatabaseIntegrationTest {
                 order.tenantId(), mapper.valueToTree(payload));
     }
 
+    private static CheckoutSnapshot basket() {
+        return new CheckoutSnapshot(List.of(new OrderLine(UUID.randomUUID(),2,"A",2500,5000,1),
+                new OrderLine(UUID.randomUUID(),3,"B",1000,3000,7)),8000,"USD","pm_approved");
+    }
+
+    @Test void basketSnapshotQueriesCausalEventsAndCancellationRemainAtomic() {
+        CheckoutSnapshot snapshot = basket();
+        Order order = writer.create(candidate(UUID.randomUUID(),"owner",snapshot),"basket",fingerprint(snapshot)).order();
+        assertEquals(2,owned(order).snapshot().items().size());
+        assertEquals(8000,owned(order).snapshot().totalMinor());
+        Event created = mapper.readValue(jdbc.queryForObject("SELECT payload::text FROM outbox WHERE aggregate_id = ?",String.class,order.id().toString()),Event.class);
+        assertEquals(2,created.eventVersion()); assertEquals(2,created.payload().get("items").size());
+        UUID reservedId = UUID.randomUUID();
+        Event reserved = new Event(reservedId,"inventory.reserved",2,Instant.now(),UUID.randomUUID().toString(),created.eventId(),order.tenantId(),created.payload());
+        consumer.onMessage(mapper.writeValueAsString(payment(order,reservedId,true)));
+        assertEquals(OrderStatus.CREATED,owned(order).status());
+        consumer.onMessage(mapper.writeValueAsString(reserved));
+        consumer.onMessage(mapper.writeValueAsString(reserved));
+        consumer.onMessage(mapper.writeValueAsString(payment(order,reservedId,false)));
+        assertEquals(OrderStatus.CONFIRMED,owned(order).status());
+        assertEquals(3,orders.history(order.id()).size());
+        assertEquals(order.snapshot(),owned(order).snapshot());
+        Order cancel = writer.create(candidate(order.tenantId(),"owner",basket()),"cancel-basket","b".repeat(64)).order();
+        var actor = new commerce.runtime.Actor(cancel.tenantId(),cancel.customerId(),java.util.Set.of("CUSTOMER"));
+        lifecycle.cancel(actor,cancel.id());
+        assertEquals(OrderStatus.CANCELLED,owned(cancel).status());
+        assertEquals(2,owned(cancel).snapshot().items().size());
+        assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM outbox WHERE aggregate_id = ? AND payload->>'eventType' = 'order.created'",Integer.class,cancel.id().toString()));
+    }
+
     private static Order candidate(UUID tenant, String customer, CheckoutSnapshot snapshot) {
         return Order.create(UUID.randomUUID(), tenant, customer, snapshot, Instant.now());
     }
 
     private static String fingerprint(CheckoutSnapshot snapshot) {
-        return new CheckoutRequest(snapshot.productId(), snapshot.quantity(), snapshot.paymentMethod()).fingerprint();
+        return new CheckoutRequest(snapshot.items().stream().map(i -> new CheckoutRequest.Item(i.productId(),i.quantity())).toList(), snapshot.paymentMethod()).fingerprint();
     }
 
     @Configuration(proxyBeanMethods = false)

@@ -315,6 +315,54 @@ def run():
             wait_refund(created["id"], pending["id"])
     client.wait_inventory(merchant, 0, 0)
     print("PASS lost payment/refund responses reconcile; authoritative decline releases stock")
+    # Genuine baskets use two same-tenant fixtures; seed inserts are idempotent across rebuilds.
+    second_product = "33333333-3333-4333-8333-333333333333"
+    second_price = client.call("catalog", "GET", f"/api/v1/products/{second_product}", customer).body["unitPriceMinor"]
+    for identity in (PRODUCT, second_product):
+        state = client.call("inventory", "GET", f"/api/v1/inventory/{identity}", merchant)
+        require(state.body["reserved"] == 0, "Basket fixture has unfinished work")
+        client.call("inventory", "PUT", f"/api/v1/inventory/{identity}", merchant, {"onHand": 6}, {"If-Match": state.headers.get("ETag")})
+    def wait_basket_stock(first, second):
+        deadline = time.monotonic() + client.timeout
+        while time.monotonic() < deadline:
+            states = [client.call("inventory", "GET", f"/api/v1/inventory/{identity}", merchant).body
+                      for identity in (PRODUCT, second_product)]
+            if [state["onHand"] for state in states] == [first, second] and all(state["reserved"] == 0 for state in states):
+                return states
+            time.sleep(0.5)
+        raise SmokeFailure("Basket inventory failed to converge")
+    basket = {"items": [{"productId": PRODUCT, "quantity": 2}, {"productId": second_product, "quantity": 1}], "paymentMethod": "pm_approved"}
+    basket_key = {"Idempotency-Key": str(uuid4())}
+    accepted = client.call("order", "POST", "/api/v1/orders", customer, basket, basket_key, expected=(201,)).body
+    total = product["unitPriceMinor"] * 2 + second_price
+    require(accepted["totalMinor"] == total and len(accepted["items"]) == 2 and "productId" not in accepted,
+            "Basket snapshot or legacy field omission is incorrect")
+    replay = client.call("order", "POST", "/api/v1/orders", customer, {**basket, "items": list(reversed(basket["items"]))}, basket_key).body
+    require(replay["id"] == accepted["id"], "Reordered basket did not replay")
+    client.wait_order(accepted["id"], customer, "CONFIRMED")
+    wait_basket_stock(4, 5)
+    payment = client.call("payment", "GET", f"/api/v1/payments/{accepted['id']}", customer).body
+    require(payment["amountMinor"] == total, "Payment did not use full basket total")
+    client.call("order", "POST", "/api/v1/orders", customer,
+                {**basket, "items": [basket["items"][0], {"productId": "22222222-2222-4222-8222-222222222222", "quantity": 1}]},
+                {"Idempotency-Key": str(uuid4())}, expected=(404,))
+    before = wait_basket_stock(4, 5)
+    bad = {**basket, "items": [{"productId": PRODUCT, "quantity": 1}, {"productId": second_product, "quantity": 100}]}
+    rejected_basket = client.call("order", "POST", "/api/v1/orders", customer, bad, {"Idempotency-Key": str(uuid4())}, expected=(201,)).body
+    client.wait_order(rejected_basket["id"], customer, "STOCK_REJECTED")
+    require(wait_basket_stock(4, 5) == before, "Rejected basket partially held stock or advanced versions")
+    refund = client.call("payment", "POST", f"/api/v1/merchant/payments/{accepted['id']}/refunds", merchant,
+                         {"amountMinor": total, "currency": "USD"}, {"Idempotency-Key": str(uuid4())}, expected=(201,)).body
+    wait_refund(accepted["id"], refund["id"])
+    require(wait_basket_stock(4, 5) == before, "Financial basket refund changed physical stock")
+    for method, expected, quantities in (("pm_declined", "PAYMENT_FAILED", (4,5)),
+                                         ("pm_lost_response", "CONFIRMED", (2,4)),
+                                         ("pm_reconcile_declined", "PAYMENT_FAILED", (2,4))):
+        pending = client.call("order", "POST", "/api/v1/orders", customer, {**basket, "paymentMethod": method},
+                              {"Idempotency-Key": str(uuid4())}, expected=(201,)).body
+        client.wait_order(pending["id"], customer, expected)
+        wait_basket_stock(*quantities)
+    print("PASS multi-item pricing, reordered replay, all-or-nothing stock, tenant isolation, full refund and reconciliation")
     client.call("gateway", "GET", "/actuator/env", expected=(404,), contract=False)
     print("PASS edge denies administrative actuator routes")
     print("PASS local smoke and REST response-shape subset checks; not official schema validation. Local fixture stock was consumed.")
