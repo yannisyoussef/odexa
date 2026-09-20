@@ -115,3 +115,7 @@ See [basket design and compatibility](docs/adr/005-multi-item-commerce.md) and
 [upgrade guidance](docs/database-migrations.md). Verify fresh volumes with
 `python3 scripts/compose-smoke.py`, then rerun the same command for a rebuild with retained data.
 `--no-build` runs against already built images. Neither command removes existing volumes.
+
+The smoke client renews its known local fixture tokens before their advertised expiry so long
+recovery scenarios remain authenticated. Unexpected 401 responses still fail verification; it
+does not extend server token lifetimes or retry authorization failures.

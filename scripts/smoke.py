@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import threading
 import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
@@ -79,6 +80,9 @@ class Client:
         self.password = values["LOCAL_FIXTURE_PASSWORD"]
         self.provider_key = values["PROVIDER_API_KEY"]
         self.timeout = float(os.environ.get("SMOKE_TIMEOUT_SECONDS", "120"))
+        self._token_lock = threading.RLock()
+        self._token_users = {}
+        self._sessions = {}
 
     @staticmethod
     def transport(url, method="GET", headers=None, data=None):
@@ -98,17 +102,38 @@ class Client:
             raise SmokeFailure("HTTP transport or JSON decoding failed (details suppressed)") from None
 
     def token(self, username):
-        data = urlencode({"client_id": "odexa-cli", "grant_type": "password", "username": username, "password": self.password}).encode()
-        response = self.transport(self.issuer + "/protocol/openid-connect/token", "POST",
-                                  {"Content-Type": "application/x-www-form-urlencoded"}, data)
-        require(response.status == 200 and isinstance(response.body, dict) and isinstance(response.body.get("access_token"), str), "Local fixture authentication failed")
-        return response.body["access_token"]
+        # A long recovery smoke can outlive Keycloak's short access-token lifetime.
+        # Renew only known fixture identities before expiry; never retry an unexpected 401.
+        with self._token_lock:
+            started = time.monotonic()
+            data = urlencode({"client_id": "odexa-cli", "grant_type": "password", "username": username, "password": self.password}).encode()
+            response = self.transport(self.issuer + "/protocol/openid-connect/token", "POST",
+                                      {"Content-Type": "application/x-www-form-urlencoded"}, data)
+            require(response.status == 200 and isinstance(response.body, dict)
+                    and isinstance(response.body.get("access_token"), str) and bool(response.body["access_token"]),
+                    "Local fixture authentication failed")
+            lifetime = response.body.get("expires_in")
+            require(type(lifetime) is int and 0 < lifetime <= 86400, "Invalid fixture token lifetime")
+            token = response.body["access_token"]
+            self._token_users[token] = username
+            self._sessions[username] = (token, started + lifetime - min(30, lifetime / 10))
+            return token
+
+    def current_token(self, token):
+        with self._token_lock:
+            username = self._token_users.get(token)
+            if username is None:
+                return token
+            current, renew_at = self._sessions[username]
+            if time.monotonic() >= renew_at:
+                return self.token(username)
+            return current
 
     def call(self, service, method, path, token=None, body=None, headers=None, expected=(200,), contract=True):
         correlation = str(uuid4())
         request_headers = {"Accept": "application/json", "X-Correlation-ID": correlation}
         if token:
-            request_headers["Authorization"] = "Bearer " + token
+            request_headers["Authorization"] = "Bearer " + self.current_token(token)
         if headers:
             request_headers.update(headers)
         data = None
@@ -369,6 +394,7 @@ def run():
 
 
 if __name__ == "__main__":
+    sys.stdout.reconfigure(line_buffering=True)
     try:
         run()
     except (SmokeFailure, ContractError) as error:

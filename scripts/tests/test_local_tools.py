@@ -220,5 +220,55 @@ class VerificationTests(unittest.TestCase):
         self.assertIsNone(smoke.NoRedirect().redirect_request(None, None, 302, None, None, "https://example.invalid"))
 
 
+class SmokeTokenTests(unittest.TestCase):
+    def client(self):
+        with patch.dict(smoke.os.environ, {}, clear=True):
+            return smoke.Client({"LOCAL_FIXTURE_PASSWORD": "test-placeholder", "PROVIDER_API_KEY": "test-placeholder"})
+
+    def test_long_workflow_renews_before_expiry_and_preserves_fixture_identity(self):
+        client = self.client()
+        replies = [smoke.Response(200, {}, {"access_token": value, "expires_in": 300})
+                   for value in ("customer-old", "merchant-old", "customer-new")]
+        with patch.object(client, "transport", side_effect=replies) as transport, patch.object(smoke.time, "monotonic", return_value=1000) as clock:
+            customer = client.token("customer-a")
+            clock.return_value = 1100
+            merchant = client.token("merchant-a")
+            clock.return_value = 1269
+            self.assertEqual(customer, client.current_token(customer))
+            clock.return_value = 1270
+            self.assertEqual("customer-new", client.current_token(customer))
+            self.assertEqual("customer-new", client.current_token(customer))
+            self.assertEqual(merchant, client.current_token(merchant))
+            self.assertEqual("external-token", client.current_token("external-token"))
+            self.assertEqual(3, transport.call_count)
+            self.assertIn(b"username=customer-a", transport.call_args.args[3])
+        def denied(url, method, headers, data):
+            self.assertEqual("Bearer customer-new", headers["Authorization"])
+            return smoke.Response(401, {}, {})
+        with patch.object(smoke.time, "monotonic", return_value=1271), patch.object(client, "transport", side_effect=denied) as transport:
+            with self.assertRaises(smoke.SmokeFailure):
+                client.call("order", "GET", "/api/v1/orders", customer, contract=False)
+            self.assertEqual(1, transport.call_count)  # A real unexpected 401 is never hidden by retry.
+
+    def test_concurrent_expired_aliases_trigger_one_renewal(self):
+        client = self.client()
+        replies = [smoke.Response(200, {}, {"access_token": value, "expires_in": 300}) for value in ("old", "new")]
+        with patch.object(client, "transport", side_effect=replies) as transport, patch.object(smoke.time, "monotonic", return_value=1000) as clock:
+            original = client.token("customer-a")
+            clock.return_value = 1300
+            with smoke.ThreadPoolExecutor(max_workers=8) as pool:
+                self.assertEqual({"new"}, set(pool.map(lambda _: client.current_token(original), range(16))))
+            self.assertEqual(2, transport.call_count)
+
+    def test_invalid_expiry_metadata_fails_without_reusing_a_token(self):
+        for lifetime in (None, 0, -1, "300", True, 86401):
+            client = self.client()
+            response = smoke.Response(200, {}, {"access_token": "unused", "expires_in": lifetime})
+            with patch.object(client, "transport", return_value=response):
+                with self.assertRaises(smoke.SmokeFailure):
+                    client.token("customer-a")
+            self.assertFalse(client._sessions)
+
+
 if __name__ == "__main__":
     unittest.main()
