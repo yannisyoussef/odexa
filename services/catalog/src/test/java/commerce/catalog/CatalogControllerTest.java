@@ -50,6 +50,18 @@ class CatalogControllerTest {
         verify(service).list(tenant, 20, null, null);
     }
 
+    @Test void internalBatchIndependentlyChecksRoleTenantAndBounds() {
+        var batch = new CatalogBatchController(service);
+        var request = new CatalogBatchController.Batch(List.of(productId));
+        when(service.batch(tenant,List.of(productId))).thenReturn(List.of(new Product(productId,"Tote","",2500,"USD",true,1)));
+        assertEquals(1,batch.batch(jwt("CUSTOMER"),request).size());
+        verify(service).batch(tenant,List.of(productId));
+        for (String role : List.of("MERCHANT_USER","SUPPORT","PLATFORM_ADMIN"))
+            assertEquals(403,assertThrows(ApiException.class,() -> batch.batch(jwt(role),request)).status());
+        for (var ids : List.of(List.<UUID>of(),List.of(productId,productId),java.util.stream.IntStream.range(0,21).mapToObj(i -> UUID.randomUUID()).toList()))
+            assertEquals(400,assertThrows(ApiException.class,() -> batch.batch(jwt("CUSTOMER"),new CatalogBatchController.Batch(ids))).status());
+    }
+
     private Jwt jwt(String role) {
         return Jwt.withTokenValue("test-placeholder").header("alg", "RS256").subject("customer-a")
                 .claim("tenant_id", tenant.toString()).claim("realm_access", Map.of("roles", List.of(role))).build();

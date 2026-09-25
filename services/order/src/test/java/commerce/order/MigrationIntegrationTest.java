@@ -27,7 +27,9 @@ class MigrationIntegrationTest {
         flyway.validate();
         assertEquals(0, Flyway.configure().dataSource(source).load().migrate().migrationsExecuted);
         var jdbc = new JdbcTemplate(source);
-        jdbc.update("INSERT INTO customer_order (id,tenant_id,customer_id,idempotency_key,fingerprint,product_id,quantity,product_name,unit_price_minor,total_minor,currency,catalog_version,payment_method,status,version,created_at) VALUES ('11111111-1111-4111-8111-111111111111','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','legacy-owner','legacy-key',repeat('a',64),'22222222-2222-4222-8222-222222222222',2,'Legacy product',2500,5000,'USD',1,'pm_approved','CREATED',0,'2026-01-01T00:00:00Z')");
+        var repository = new OrderRepository(jdbc);
+        repository.insert(Order.create(UUID.randomUUID(), UUID.randomUUID(), "legacy-owner",
+                OrderStateMachineTest.created().snapshot(), java.time.Instant.now()), "legacy-key", "a".repeat(64));
         assertEquals("legacy-owner:legacy-key:5000", jdbc.queryForObject("SELECT customer_id || ':' || idempotency_key || ':' || total_minor FROM customer_order", String.class));
     }
 
@@ -116,12 +118,50 @@ class MigrationIntegrationTest {
             jdbc.update("INSERT INTO order_history(order_id,version,status,occurred_at,reason) VALUES (?,1,?,CURRENT_TIMESTAMP,?)",
                     id, status, status.equals("CANCELLED") ? "CUSTOMER_CANCELLED" : "DISPATCH_EXPIRED");
         }
-        var before = jdbc.queryForList("SELECT * FROM customer_order ORDER BY id");
+        var before = jdbc.queryForList("SELECT id,tenant_id,customer_id,idempotency_key,fingerprint,total_minor,currency,payment_method,status,version,created_at FROM customer_order ORDER BY id");
         var history = jdbc.queryForList("SELECT * FROM order_history ORDER BY order_id");
         var upgrade = Flyway.configure().dataSource(source).load(); upgrade.migrate(); upgrade.validate();
-        assertEquals(before, jdbc.queryForList("SELECT * FROM customer_order ORDER BY id"));
+        assertEquals(before, jdbc.queryForList("SELECT id,tenant_id,customer_id,idempotency_key,fingerprint,total_minor,currency,payment_method,status,version,created_at FROM customer_order ORDER BY id"));
         assertEquals(history, jdbc.queryForList("SELECT * FROM order_history ORDER BY order_id"));
         assertEquals(0, upgrade.migrate().migrationsExecuted);
+    }
+
+    @Test void releasedV030OrderAndIdempotencyReplayKeepOriginalSnapshotWithoutCatalog() {
+        var source = isolated();
+        Flyway.configure().dataSource(source).target("4").load().migrate();
+        var jdbc = new JdbcTemplate(source);
+        UUID id = UUID.randomUUID(), tenant = UUID.randomUUID(), product = UUID.fromString("22222222-2222-4222-8222-222222222222");
+        var intent = new CheckoutRequest(product,2,"pm_approved");
+        jdbc.update("""
+                INSERT INTO customer_order(id,tenant_id,customer_id,idempotency_key,fingerprint,product_id,
+                    quantity,product_name,unit_price_minor,total_minor,currency,catalog_version,payment_method,status,version,created_at)
+                VALUES (?,?,'owner','legacy-replay',?,?,2,'Accepted price',2500,5000,'USD',7,'pm_approved','CREATED',0,'2026-01-01T00:00:00Z')
+                """,id,tenant,"919e76e5e55309f8fd437a6c15a35d1440190feb89a98a2885e4588c828913f5",product); // Frozen v0.3 single-product digest.
+        jdbc.update("INSERT INTO order_history VALUES (?,0,'CREATED','2026-01-01T00:00:00Z','ORDER_CREATED')",id);
+        var mapper = tools.jackson.databind.json.JsonMapper.builder().build();
+        var oldEvent = new commerce.runtime.Event(UUID.randomUUID(),"order.created",1,java.time.Instant.now(),UUID.randomUUID().toString(),null,tenant,
+                mapper.valueToTree(java.util.Map.of("orderId",id,"customerId","owner","productId",product,"quantity",2,"totalMinor",5000,"currency","USD","paymentMethod","pm_approved")));
+        jdbc.update("INSERT INTO outbox(event_id,tenant_id,aggregate_id,topic,payload,occurred_at) VALUES(?,?,?,'commerce.events.v1',?::jsonb,CURRENT_TIMESTAMP)",
+                oldEvent.eventId(),tenant,id.toString(),mapper.writeValueAsString(oldEvent));
+        var before = jdbc.queryForList("SELECT payload FROM outbox");
+        Flyway.configure().dataSource(source).load().migrate();
+        var repository = new OrderRepository(jdbc);
+        var catalog = org.mockito.Mockito.mock(CatalogClient.class);
+        var writer = org.mockito.Mockito.mock(CheckoutWriter.class);
+        var service = new CheckoutService(repository,writer,catalog,java.time.Clock.systemUTC());
+        var actor = new commerce.runtime.Actor(tenant,"owner",java.util.Set.of("CUSTOMER"));
+        for (var request : java.util.List.of(intent,new CheckoutRequest(java.util.List.of(new CheckoutRequest.Item(product,2)),"pm_approved"))) {
+            var result = service.checkout(actor,"unused","legacy-replay",request);
+            assertFalse(result.created()); assertEquals(id,result.order().id());
+            assertEquals(5000,result.order().snapshot().totalMinor());
+            assertEquals("Accepted price",result.order().snapshot().items().getFirst().productName());
+            assertEquals(7,result.order().snapshot().items().getFirst().catalogVersion());
+        }
+        org.mockito.Mockito.verifyNoInteractions(catalog,writer);
+        assertEquals(before,jdbc.queryForList("SELECT payload FROM outbox"));
+        assertEquals(oldEvent,mapper.readValue(jdbc.queryForObject("SELECT payload::text FROM outbox",String.class),commerce.runtime.Event.class));
+        assertEquals(1,repository.history(id).size());
+        assertEquals(0,repository.findOwned(tenant,"owner",id).orElseThrow().version());
     }
 
     private static DriverManagerDataSource isolated() {

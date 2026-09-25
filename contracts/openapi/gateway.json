@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Odexa public edge",
-    "version": "1.1.0",
+    "version": "1.3.0",
     "description": "Fixed-destination gateway. Request bodies and success responses reference the authoritative service HTTP contracts; the edge preserves their bodies/statuses, bearer authentication, ETags, If-Match, If-None-Match, Idempotency-Key and X-Correlation-ID. Only the listed methods and canonical UUID resource paths are forwarded; malformed UUID paths are rejected with 404 at the edge before reaching service validation. The downstream resource servers validate issuer, odexa-api audience, UUID tenant claim, role and ownership. Forwarded/X-Forwarded-* and caller-supplied hosts are not trusted or forwarded; deploy behind a trusted ingress without enabling forwarded-header interpretation. Local edge bucket is global per process (100 requests/s, burst 200), not a distributed quota. Requests are limited to 32768 bytes including chunked bodies; encoded bodies are rejected. Responses are limited to 2097152 bytes. Redirects are never followed, and Location is only exposed as a safe relative resource path. Extra edge-level responses applicable to every proxied operation are recorded in x-edge-responses below. No provider or administrative actuator route crosses the edge. Signed webhook POSTs have a separate 100 requests/second, burst 200 bucket and a 64 KiB request bound. Only the matching provider signature is forwarded intact; fixed routes remain enforced."
   },
   "servers": [
@@ -395,8 +395,12 @@
           },
           "default": {
             "$ref": "#/components/responses/Problem"
+          },
+          "422": {
+            "$ref": "#/components/responses/Problem"
           }
-        }
+        },
+        "description": "Supports bounded multi-item and legacy checkout. Body limit remains32768 bytes. Catalog internal batch lookup is deliberately not routed through the edge."
       },
       "get": {
         "tags": [

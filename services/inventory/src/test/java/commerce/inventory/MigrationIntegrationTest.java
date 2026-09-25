@@ -52,6 +52,37 @@ class MigrationIntegrationTest {
         assertEquals(0, Flyway.configure().dataSource(source).load().migrate().migrationsExecuted);
     }
 
+    @Test void releasedV030ActiveHoldAndOldDurableCheckoutSurviveUpgradeAndSettle() {
+        var source = isolated();
+        Flyway.configure().dataSource(source).target("2").load().migrate();
+        var jdbc = new JdbcTemplate(source);
+        UUID tenant = UUID.randomUUID(), product = UUID.randomUUID(), heldOrder = UUID.randomUUID(), reservedEvent = UUID.randomUUID();
+        jdbc.update("INSERT INTO inventory_stock VALUES(?,?,10,3,7)",tenant,product);
+        jdbc.update("INSERT INTO inventory_reservation VALUES(?,?,'owner',?,3,7500,'USD','pm_approved','RESERVED',?)",tenant,heldOrder,product,reservedEvent);
+        var before = jdbc.queryForList("SELECT * FROM inventory_stock");
+        Flyway.configure().dataSource(source).load().migrate();
+        assertEquals(before,jdbc.queryForList("SELECT * FROM inventory_stock"));
+        assertEquals(3,jdbc.queryForObject("SELECT quantity FROM reservation_line WHERE order_id = ?",Integer.class,heldOrder));
+        var mapper = tools.jackson.databind.json.JsonMapper.builder().build();
+        var reservations = new ReservationService(jdbc,new commerce.runtime.Outbox(jdbc,mapper));
+        var tx = new org.springframework.transaction.support.TransactionTemplate(new org.springframework.jdbc.datasource.DataSourceTransactionManager(source));
+        tx.executeWithoutResult(status -> reservations.settle(tenant,heldOrder,false,reservedEvent));
+        assertEquals("10:0:8",jdbc.queryForObject("SELECT on_hand || ':' || reserved || ':' || version FROM inventory_stock",String.class));
+        UUID replayOrder = UUID.randomUUID();
+        var event = new commerce.runtime.Event(UUID.randomUUID(),"order.created",1,java.time.Instant.now(),UUID.randomUUID().toString(),null,tenant,
+                mapper.valueToTree(java.util.Map.of("orderId",replayOrder,"customerId","owner","productId",product,"quantity",2,"totalMinor",5000,"currency","USD","paymentMethod","pm_approved")));
+        var listener = new InventoryEvents(mapper,new commerce.runtime.Inbox(jdbc),reservations);
+        var record = new org.apache.kafka.clients.consumer.ConsumerRecord<String,String>("commerce.events.v1",0,0,replayOrder.toString(),mapper.writeValueAsString(event));
+        tx.executeWithoutResult(status -> listener.onEvent(record));
+        tx.executeWithoutResult(status -> listener.onEvent(record));
+        UUID cause = jdbc.queryForObject("SELECT reservation_event_id FROM inventory_reservation WHERE order_id = ?",UUID.class,replayOrder);
+        tx.executeWithoutResult(status -> reservations.settle(tenant,replayOrder,true,cause));
+        tx.executeWithoutResult(status -> reservations.settle(tenant,replayOrder,true,cause));
+        assertEquals("8:0:10",jdbc.queryForObject("SELECT on_hand || ':' || reserved || ':' || version FROM inventory_stock",String.class));
+        assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM outbox",Integer.class));
+        assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM inbox",Integer.class));
+    }
+
     private static DriverManagerDataSource isolated() {
         var root = new DriverManagerDataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
         String schema = "migration_" + UUID.randomUUID().toString().replace("-", "");

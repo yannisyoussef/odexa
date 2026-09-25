@@ -75,3 +75,26 @@ provider notification inboxes. Simulator V2 adds fault scenarios, refunds and du
 delivery. Order V4 widens opaque payment references without changing existing order states.
 All migrations released in v0.2.0 remain unchanged. Before upgrading, rerun local bootstrap
 to append the independent simulator signing credential; existing credentials are preserved.
+
+## Multi-item upgrade from the payment-provider baseline
+
+OrderV5 introduces immutable order_line rows from the existing accepted snapshots and drops
+obsolete header line columns. InventoryV3 backfills reservation_line from every historical
+reservation, then drops its scalar product/quantity columns. IDs, totals, state, timestamps,
+versions, fingerprints, history, active stock holds, payment/refund rows and outbox payloads
+remain intact. No catalog/network lookup is involved. Payment and simulator need no new schema.
+Previously applied migration files remain byte-for-byte unchanged.
+
+Use the same coordinated maintenance window: stop edge/business workers, keep databases and
+Kafka volumes, rebuild all services together, then start the complete new set. No Flyway baseline
+is needed when history already exists. New publishers emit order.created/inventory.reserved v2;
+new consumers accept both v1 and v2, including unpublished old outboxes. Do not run old consumers
+against new publishers. Rollback requires restoring the old database backup with old binaries;
+dropping scalar columns prevents simply restarting old applications. This is not a rolling or
+zero-downtime migration. The latest merged payment baseline was inspected on main; do not assume
+a v0.3.0 tag exists when selecting release artifacts.
+
+Tests install the actual released migration sequence to orderV4/inventoryV2, seed old records,
+then apply new migrations. They verify one-line snapshots, stopped orders/history, old keys,
+active holds, unchanged durable messages and successful v1 replay/settlement. Compose smoke
+also runs on preserved baseline volumes and after a new-version rebuild.

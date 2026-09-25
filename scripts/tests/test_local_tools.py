@@ -97,6 +97,25 @@ class ContractTests(unittest.TestCase):
         with self.assertRaises(contract_check.ContractError):
             contract_check.validate({}, {"if": {}}, self.source)
 
+    def test_basket_event_versions_and_checkout_compatibility(self):
+        schema, target = contract_check.resolve("#/components/messages/OrderCreatedV2/payload", self.source)
+        payload = {"eventId": str(uuid4()), "eventType": "order.created", "eventVersion": 2,
+                   "occurredAt": "2026-01-01T00:00:00Z", "correlationId": str(uuid4()), "tenantId": str(uuid4()),
+                   "payload": {"orderId": str(uuid4()), "customerId": "owner", "items": [{"productId": str(uuid4()), "quantity": 2}],
+                               "totalMinor": 5000, "currency": "USD", "paymentMethod": "pm_approved"}}
+        contract_check.validate(payload, schema, target)
+        with self.assertRaises(contract_check.ContractError):
+            contract_check.validate({**payload, "eventVersion": 1}, schema, target)
+        source = contract_check.ROOT / "contracts/openapi/order.json"
+        checkout = contract_check.load(source)["components"]["schemas"]["CheckoutRequest"]
+        legacy = {"productId": str(uuid4()), "quantity": 1, "paymentMethod": "pm_approved"}
+        basket = {"items": [{"productId": legacy["productId"], "quantity": 1}], "paymentMethod": "pm_approved"}
+        for valid in (legacy, basket):
+            contract_check.validate(valid, checkout, source)
+        for invalid in ({**legacy, **basket}, {**basket, "totalMinor": 1}, {**basket, "items": []}):
+            with self.assertRaises(contract_check.ContractError):
+                contract_check.validate(invalid, checkout, source)
+
     def test_event_payload_envelope_and_kind_are_validated(self):
         schema, target = contract_check.resolve("#/components/messages/OrderCreated/payload", self.source)
         payload = {"eventId": str(uuid4()), "eventType": "order.created", "eventVersion": 1,
@@ -199,6 +218,68 @@ class VerificationTests(unittest.TestCase):
         with self.assertRaises(smoke.SmokeFailure):
             smoke.base_url("http://username:fixture@localhost", {"localhost"})
         self.assertIsNone(smoke.NoRedirect().redirect_request(None, None, 302, None, None, "https://example.invalid"))
+
+
+class SmokeTokenTests(unittest.TestCase):
+    def client(self):
+        with patch.dict(smoke.os.environ, {}, clear=True):
+            return smoke.Client({"LOCAL_FIXTURE_PASSWORD": "test-placeholder", "PROVIDER_API_KEY": "test-placeholder"})
+
+    def test_long_workflow_renews_before_expiry_and_preserves_fixture_identity(self):
+        client = self.client()
+        replies = [smoke.Response(200, {}, {"access_token": value, "expires_in": 300})
+                   for value in ("customer-old", "merchant-old", "customer-new")]
+        with patch.object(client, "transport", side_effect=replies) as transport, patch.object(smoke.time, "monotonic", return_value=1000) as clock:
+            customer = client.token("customer-a")
+            clock.return_value = 1100
+            merchant = client.token("merchant-a")
+            clock.return_value = 1269
+            self.assertEqual(customer, client.current_token(customer))
+            clock.return_value = 1270
+            self.assertEqual("customer-new", client.current_token(customer))
+            self.assertEqual("customer-new", client.current_token(customer))
+            self.assertEqual(merchant, client.current_token(merchant))
+            self.assertEqual("external-token", client.current_token("external-token"))
+            self.assertEqual(3, transport.call_count)
+            self.assertIn(b"username=customer-a", transport.call_args.args[3])
+        def denied(url, method, headers, data):
+            self.assertEqual("Bearer customer-new", headers["Authorization"])
+            return smoke.Response(401, {}, {})
+        with patch.object(smoke.time, "monotonic", return_value=1271), patch.object(client, "transport", side_effect=denied) as transport:
+            with self.assertRaises(smoke.SmokeFailure):
+                client.call("order", "GET", "/api/v1/orders", customer, contract=False)
+            self.assertEqual(1, transport.call_count)  # A real unexpected 401 is never hidden by retry.
+
+    def test_concurrent_expired_aliases_trigger_one_renewal(self):
+        client = self.client()
+        replies = [smoke.Response(200, {}, {"access_token": value, "expires_in": 300}) for value in ("old", "new")]
+        with patch.object(client, "transport", side_effect=replies) as transport, patch.object(smoke.time, "monotonic", return_value=1000) as clock:
+            original = client.token("customer-a")
+            clock.return_value = 1300
+            with smoke.ThreadPoolExecutor(max_workers=8) as pool:
+                self.assertEqual({"new"}, set(pool.map(lambda _: client.current_token(original), range(16))))
+            self.assertEqual(2, transport.call_count)
+
+    def test_clock_jump_or_suspension_renews_without_waiting_for_monotonic_expiry(self):
+        for later_wall, later_monotonic in ((1600, 1001), (900, 1300)):
+            client = self.client()
+            replies = [smoke.Response(200, {}, {"access_token": value, "expires_in": 300}) for value in ("old", "new")]
+            with patch.object(client, "transport", side_effect=replies) as transport, patch.object(smoke.time, "monotonic", return_value=1000) as monotonic, patch.object(smoke.time, "time", return_value=1000) as wall:
+                original = client.token("customer-a")
+                monotonic.return_value = later_monotonic
+                wall.return_value = later_wall
+                self.assertEqual("new", client.current_token(original))
+                self.assertEqual("new", client.current_token(original))
+                self.assertEqual(2, transport.call_count)
+
+    def test_invalid_expiry_metadata_fails_without_reusing_a_token(self):
+        for lifetime in (None, 0, -1, "300", True, 86401):
+            client = self.client()
+            response = smoke.Response(200, {}, {"access_token": "unused", "expires_in": lifetime})
+            with patch.object(client, "transport", return_value=response):
+                with self.assertRaises(smoke.SmokeFailure):
+                    client.token("customer-a")
+            self.assertFalse(client._sessions)
 
 
 if __name__ == "__main__":

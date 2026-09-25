@@ -36,7 +36,7 @@ class EventTest {
     @Test
     void rejectsUnknownVersionTypeFieldsAndCoercions() {
         ObjectNode json = mapper.valueToTree(sample());
-        json.put("eventVersion", 2);
+        json.put("eventVersion", 3);
         assertInvalid(json);
         json.put("eventVersion", "1");
         assertInvalid(json);

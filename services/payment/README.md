@@ -78,3 +78,12 @@ Test Mode payment, retries the same command, then fully refunds it. Missing cred
 clearly; they never produce a skipped success. It does not certify real webhook delivery.
 For that, configure the endpoint above, use an isolated Test Mode account, and inspect
 Odexa's payment/refund resources for convergence. No live-money verification is supported.
+
+## Basket compatibility
+
+Payment consumes inventory.reserved v1 or v2, validates the bounded intent at its transport
+boundary, then persists only the authoritative order-level total. Providers never receive item
+models. The same amount/currency/linkage checks apply to multi-item payments and reconciliation.
+Full refunds must equal the entire basket payment; item/partial refunds remain unsupported.
+A refund preserves the confirmed order and every committed stock line. No payment or simulator
+schema migration is needed for multi-item checkout.

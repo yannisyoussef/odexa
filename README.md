@@ -1,6 +1,6 @@
 # Odexa
 
-Multi-tenant commerce and order management, starting with a reliable single-product checkout. **[odexa.cc](https://odexa.cc)** is the product domain; this repository does not deploy to it.
+Multi-tenant commerce and order management, with durable multi-item checkout and atomic basket reservations. **[odexa.cc](https://odexa.cc)** is the product domain; this repository does not deploy to it.
 
 Java 25 · Spring Boot 4.1.1 · Gradle Kotlin DSL · PostgreSQL 17 · Kafka · Keycloak
 
@@ -53,7 +53,7 @@ With Java 25, run `./gradlew check bootJar`. Dependencies are locked; wrapper di
 
 - `python3 scripts/ci.py check`: Java tests, Python tooling tests, repository boundary checks and structural contract checks.
 - `python3 scripts/ci.py integration`: PostgreSQL/Kafka/component tests; requires Docker and fails if infrastructure tests are skipped.
-- `python3 scripts/compose-smoke.py`: container builds, health checks, authenticated checkout, isolation, stock rejection, idempotency, decline/release, provider replay and concurrent reservations.
+- `python3 scripts/compose-smoke.py`: container builds, health checks, authenticated single/multi-item checkout, isolation, whole-basket stock rejection, canonical idempotency, decline/release, full refunds, provider reconciliation and concurrent reservations.
 
 Direct `./gradlew integrationTest` skips Testcontainers when Docker is absent; those skips **are not successful infrastructure verification**. CI uses the stricter wrapper. Contract checks currently verify local references and supported response-schema assertions, not official OpenAPI/AsyncAPI meta-schema conformance.
 
@@ -68,7 +68,7 @@ Direct `./gradlew integrationTest` skips Testcontainers when Docker is absent; t
 
 ## Current limits
 
-This is a working initial slice, **not production-ready commerce**. Checkout is single-product/USD. Merchant-created products need inventory provisioning; free checkout is rejected before persistence. Partial refunds, cancellation after dispatch, reservation expiry and fulfilment are not implemented. Cancellation before dispatch has a deliberately small window. Expiry applies only to never-dispatched checkout; dispatched CREATED orders await inventory delivery/operator recovery. Unknown payments retain stock during automatic provider reconciliation; unresolved cases remain REVIEW_REQUIRED, with no support UI yet.
+This is a working initial slice, **not production-ready commerce**. Checkout supports 1–20 distinct products, 1–100 units per line, USD only. Duplicate products are rejected; stock is reserved for the entire basket or none. Merchant-created products need inventory provisioning; free checkout is rejected before persistence. Partial refunds, cancellation after dispatch, reservation expiry and fulfilment are not implemented. Cancellation before dispatch has a deliberately small window. Expiry applies only to never-dispatched checkout; dispatched CREATED orders await inventory delivery/operator recovery. Unknown payments retain stock during automatic provider reconciliation; unresolved cases remain REVIEW_REQUIRED, with no support UI yet.
 
 Future work includes outbox/inbox retention, authenticated Kafka transport/ACLs, production OIDC provisioning, telemetry export and full standards-based contract validation. Versioned migrations support fresh databases and explicit v0.1.0 upgrades; old orders start their public history with a labelled migration snapshot.
 
@@ -89,5 +89,34 @@ Flyway migrations. Deploy all event consumers together because two new financial
 are now recognized. Default development and CI need no Stripe keys or internet access to Stripe.
 
 This remains Test Mode commerce: no live-money certification, frontend authentication flow,
-partial refunds, fulfilment, returns, multi-item checkout, production identity provisioning,
+partial refunds, fulfilment, returns, production identity provisioning,
 Kafka TLS/ACLs, cloud deployment, support UI, or accounting ledger.
+
+## Multi-item checkout
+
+```json
+{"items":[{"productId":"11111111-1111-4111-8111-111111111111","quantity":2},{"productId":"33333333-3333-4333-8333-333333333333","quantity":1}],"paymentMethod":"pm_approved"}
+```
+
+The local tenant-A fixtures include a $25 tote and $12 notebook. The example totals6200 USD
+minor units. Send a customer bearer token and `Idempotency-Key` to `POST /api/v1/orders`.
+Legacy `{productId, quantity, paymentMethod}` requests still work. Both normalize to canonical
+product order; retrying with reordered identical items returns the original order and prices.
+Do not mix request forms or submit prices. Responses always contain immutable `items`; legacy
+`productId`/`quantity` appear only on one-line orders. Collection and merchant views use the same
+representation. Baskets remain one reservation, one payment and one full financial refund.
+
+Catalog resolves all products under the forwarded customer's tenant in one bounded private
+batch call. Any unavailable line prevents acceptance or the entire stock reservation. Free
+lines can accompany a paid line, but a zero-total basket fails422. There is no saved cart,
+partial acceptance, item refund, shipping, tax or discount model.
+
+See [basket design and compatibility](docs/adr/005-multi-item-commerce.md) and
+[upgrade guidance](docs/database-migrations.md). Verify fresh volumes with
+`python3 scripts/compose-smoke.py`, then rerun the same command for a rebuild with retained data.
+`--no-build` runs against already built images. Neither command removes existing volumes.
+
+The smoke client renews its known local fixture tokens before their advertised expiry so long
+recovery scenarios remain authenticated, including after local VM suspension or clock changes.
+Unexpected 401 responses still fail verification; it
+does not extend server token lifetimes or retry authorization failures.

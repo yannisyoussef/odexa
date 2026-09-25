@@ -1,13 +1,13 @@
 # Order service
 
-Single-product checkout at `/api/v1/orders`, default port 8083. Requires the shared runtime module, a private PostgreSQL database, Kafka and the tenant-authorized catalog. The public contract is `contracts/openapi/order.json`.
+Bounded multi-item checkout at `/api/v1/orders`, default port 8083. Requires the shared runtime module, a private PostgreSQL database, Kafka and the tenant-authorized catalog. The public contract is `contracts/openapi/order.json`.
 
 ## Checkout boundary
 
 - JWT `tenant_id` and `sub` are the only tenant/customer authority. Customer endpoints require `CUSTOMER`; other roles do not bypass ownership. Explicit merchant paths require `MERCHANT_ADMIN` or `MERCHANT_USER` within the signed tenant. Reads filter tenant and owner together and return 404 for all absent/inaccessible IDs.
-- The idempotency identity is `(tenant_id, customer_id, idempotency_key)`. The SHA-256 fingerprint encodes canonical product UUID, quantity and provider reference. Records and keys have no automatic expiry.
+- The idempotency identity is `(tenant_id, customer_id, idempotency_key)`. The SHA-256 fingerprint encodes sorted distinct product UUIDs, quantities and provider reference; one-line hashes preserve the released algorithm across old and new request forms. Records and keys have no automatic expiry.
 - A persisted matching request is returned before contacting catalog. A changed fingerprint returns 409 before contacting catalog. After a catalog failure, a second lookup can recover a concurrently committed matching request.
-- New requests forward their bearer JWT and correlation UUID to catalog. Redirects are disabled, default connection/read timeouts are 2s/3s, and configuration rejects nonpositive or greater-than-10s timeouts. Only an active, matching product with valid USD price/version is accepted; totals use checked multiplication.
+- New requests forward their bearer JWT and correlation UUID to catalog. Redirects are disabled, default connection/read timeouts are 2s/3s, and configuration rejects nonpositive or greater-than-10s timeouts. One private batch request resolves all20-or-fewer products in one catalog statement. Every product must match, be active and use USD. Line multiplication and total addition are checked; overflow is422 ORDER_TOTAL_OVERFLOW. Free lines are allowed in a positive-total basket; zero-total remains422.
 - Network access runs outside the database transaction. `CheckoutWriter` uses READ_COMMITTED and `INSERT ... ON CONFLICT DO NOTHING`, then reads the committed winner. It never catches a unique violation in an aborted transaction. Only the inserted winner appends `order.created`, in the same transaction.
 - A new order returns 201; retry returns 200, the same Location and the current public order state. Snapshot timestamp precision is normalized by reading the persisted row before returning.
 
@@ -19,7 +19,7 @@ Single-product checkout at `/api/v1/orders`, default port 8083. Requires the sha
 | PENDING_PAYMENT | Same event is inert; another reservation conflicts | Conflict | CONFIRMED / PAYMENT_FAILED only if causation matches reservation event ID |
 | Any terminal state | Inert | Inert | Inert, including contradictory late results |
 
-The aggregate is immutable. A validated reservation payload must match the order's customer, product, quantity, total, currency and payment method. A payment must have a payment UUID and non-null reservation causation UUID.
+The aggregate is immutable. A validated reservation payload must match the order's customer, complete canonical product/quantity set, total, currency and payment method. A payment must have a payment UUID and non-null reservation causation UUID.
 
 A payment producer can publish before the order consumer receives the causative inventory event, despite using the same order Kafka key. The consumer therefore saves the early result's event ID, reservation event ID, payment ID and outcome durably on the order without changing its public state. When that exact reservation event arrives, both state transitions are applied atomically. `order.confirmed` uses the payment event ID as causation, including this deferred path. Valid events never require unsafe CREATED-to-terminal shortcuts.
 
@@ -51,7 +51,7 @@ filters are live views; there is no multi-request snapshot. Unknown/repeated col
 parameters, including customer/tenant overrides, fail with coded 400 problems. Detail and history
 reads take no parameters and ignore any that are sent; scope always comes from the token.
 
-Existing operations and fields are unchanged. The `status` vocabulary gained `CANCELLED` and
+Operations remain compatible. All order views now include immutable line snapshots in `items`. Deprecated `productId` and `quantity` remain only for one-line orders and are omitted for baskets. The `status` vocabulary gained `CANCELLED` and
 `EXPIRED`, and `EXPIRED` can appear on an order placed by an unchanged v0.1.0 client, so clients
 must treat an unrecognized status as a closed order rather than fail.
 
@@ -85,4 +85,22 @@ unavailable each publisher instance fences at most one batch, so later checkouts
 See the [full transition table](../../docs/adr/003-order-lifecycle-and-queries.md) and
 [migration/rollout procedure](../../docs/database-migrations.md). New facts are `order.cancelled`,
 `order.expired` and `order.rejected`, all v1. Rejection reasons distinguish insufficient stock
-from authoritative payment decline. Existing checkout/reservation/payment payloads are unchanged.
+from authoritative payment decline. Checkout and reservation events now use v2 basket payloads; old v1 remains decodable. Payment and lifecycle payloads remain v1.
+
+## Basket contract and persistence
+
+Accept either `items:[{productId,quantity},…]` or the deprecated `productId,quantity` pair,
+plus one opaque `paymentMethod`. Never both. Bounds:1–20 distinct products,1–100 units per
+line, maximum2000units. Duplicates fail400 DUPLICATE_ORDER_ITEM; array order is not semantic.
+The server owns prices, tenant, customer, currency and state. All lines must be tenant-visible;
+foreign/missing IDs return the same404. Inactive products return409 before order acceptance.
+
+`order_line` owns product ID, quantity, product name, unit and line totals and catalog version.
+These immutable accepted values survive price changes. MigrationV5 copies existing snapshots,
+then removes scalar line columns from the order header. Queries embed at most20 lines per order
+and100 orders per page. Line reads use the order-line primary key; no catalog query occurs on
+replay or order reads. History still records state transitions, never duplicates the basket.
+No deprecation removal date is promised. Legacy clients must tolerate additive response fields;
+clients browsing multi-item orders must use `items` rather than single-product conveniences.
+
+See [ADR005](../../docs/adr/005-multi-item-commerce.md) for atomicity and upgrade guarantees.

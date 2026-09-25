@@ -27,13 +27,18 @@ public class Outbox {
     /** Participates in the caller's domain transaction; never creates a separate transaction. */
     @Transactional(propagation = Propagation.MANDATORY)
     public UUID append(String eventType, UUID tenantId, String aggregateId, Object payload, UUID causationId) {
+        return append(eventType, 1, tenantId, aggregateId, payload, causationId);
+    }
+
+    @Transactional(propagation = Propagation.MANDATORY)
+    public UUID append(String eventType, int version, UUID tenantId, String aggregateId, Object payload, UUID causationId) {
         JdbcTransactions.requireWritable(jdbc);
         Objects.requireNonNull(tenantId, "tenantId");
         if (aggregateId == null || aggregateId.isBlank() || aggregateId.length() > 128
                 || aggregateId.chars().anyMatch(Character::isISOControl)) {
             throw new IllegalArgumentException("Invalid aggregate identifier");
         }
-        Event event = new Event(UUID.randomUUID(), eventType, 1, Instant.now(),
+        Event event = new Event(UUID.randomUUID(), eventType, version, Instant.now(),
                 Correlation.current(), causationId, tenantId, mapper.valueToTree(payload));
         jdbc.update("""
                 INSERT INTO outbox (event_id, tenant_id, aggregate_id, topic, payload, occurred_at)

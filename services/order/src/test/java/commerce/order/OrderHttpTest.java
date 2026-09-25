@@ -180,6 +180,19 @@ class OrderHttpTest {
         verifyNoInteractions(outbox);
     }
 
+    @Test void basketBoundaryRejectsNullAlternateFieldsUnknownOwnedValuesAndCoercion() throws Exception {
+        String item = "{\"productId\":\"" + order.snapshot().productId() + "\",\"quantity\":2}";
+        for (String body : List.of(
+                "{\"items\":[" + item + "],\"productId\":null,\"paymentMethod\":\"pm_approved\"}",
+                "{\"productId\":\"" + order.snapshot().productId() + "\",\"quantity\":2,\"items\":null,\"paymentMethod\":\"pm_approved\"}",
+                "{\"items\":[" + item.replace("2}","2,\"unitPriceMinor\":1}") + "],\"paymentMethod\":\"pm_approved\"}",
+                "{\"items\":[" + item.replace("2}","\"2\"}") + "],\"paymentMethod\":\"pm_approved\"}")) {
+            mvc.perform(post("/api/v1/orders").with(customer()).header("Idempotency-Key","invalid-basket")
+                    .contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isBadRequest());
+        }
+        verifyNoInteractions(catalog,writer);
+    }
+
     private JwtRequestPostProcessor customer() {
         return actor(order.tenantId(), order.customerId(), "CUSTOMER");
     }

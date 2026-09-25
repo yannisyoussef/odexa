@@ -76,7 +76,7 @@ class InventoryEventsTest {
         for (String field : new String[]{"eventVersion", "eventType", "payload"}) {
             ObjectNode node = (ObjectNode) mapper.readTree(valid.value());
             switch (field) {
-                case "eventVersion" -> node.put(field, 2);
+                case "eventVersion" -> node.put(field, 3);
                 case "eventType" -> node.put(field, "unknown.event");
                 default -> node.putNull(field);
             }
@@ -105,7 +105,7 @@ class InventoryEventsTest {
         for (int length : new int[]{200, 201, 255}) {
             String customerId = "c".repeat(length);
             payload.put("customerId", customerId);
-            assertEquals(customerId, InventoryEvents.readOrder(payload).customerId());
+            assertEquals(customerId, InventoryEvents.readOrder(payload, 2).customerId());
         }
         payload.put("customerId", "c".repeat(256));
         assertThrows(IllegalArgumentException.class, () -> listener.onEvent(record(event("order.created", payload))));
@@ -135,7 +135,7 @@ class InventoryEventsTest {
     }
 
     private Event event(String type, Object payload, UUID causationId) {
-        return new Event(UUID.randomUUID(), type, 1, Instant.now(), UUID.randomUUID().toString(),
+        return new Event(UUID.randomUUID(), type, type.equals("order.created") ? 2 : 1, Instant.now(), UUID.randomUUID().toString(),
                 causationId, tenant, mapper.valueToTree(payload));
     }
 

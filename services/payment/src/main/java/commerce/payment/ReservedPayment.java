@@ -6,15 +6,22 @@ import tools.jackson.databind.JsonNode;
 /** Trusted reservation snapshot, validated before inserting inbox or work. */
 public record ReservedPayment(UUID orderId, String customerId, long totalMinor,
                               String currency, String paymentMethod) {
-    static ReservedPayment parse(JsonNode node) {
+    static ReservedPayment parse(JsonNode node) { return parse(node, 1); }
+    static ReservedPayment parse(JsonNode node, int version) {
         if (node == null || !node.isObject()) throw invalid();
         UUID orderId = uuid(node, "orderId");
-        uuid(node, "productId");
-        JsonNode quantity = node.get("quantity");
+        if (version == 1) {
+            if (node.has("items")) throw invalid();
+            line(node);
+        } else {
+            JsonNode items = node.get("items");
+            if (items == null || !items.isArray() || items.isEmpty() || items.size() > 20
+                    || node.has("productId") || node.has("quantity")) throw invalid();
+            var ids = new java.util.HashSet<UUID>();
+            for (JsonNode item : items) if (!ids.add(line(item))) throw invalid();
+        }
         JsonNode total = node.get("totalMinor");
-        if (quantity == null || !quantity.isIntegralNumber() || !quantity.canConvertToInt()
-                || quantity.intValue() < 1 || quantity.intValue() > 100
-                || total == null || !total.isIntegralNumber() || !total.canConvertToLong()
+        if (total == null || !total.isIntegralNumber() || !total.canConvertToLong()
                 || total.longValue() <= 0) throw invalid();
         if (node.has("reservationId") && !orderId.equals(uuid(node, "reservationId"))) throw invalid();
         String customer = text(node, "customerId", 255);
@@ -24,6 +31,13 @@ public record ReservedPayment(UUID orderId, String customerId, long totalMinor,
             throw invalid();
         }
         return new ReservedPayment(orderId, customer, total.longValue(), currency, method);
+    }
+
+    private static UUID line(JsonNode node) {
+        JsonNode quantity = node.get("quantity");
+        if (quantity == null || !quantity.isIntegralNumber() || !quantity.canConvertToInt()
+                || quantity.intValue() < 1 || quantity.intValue() > 100) throw invalid();
+        return uuid(node, "productId");
     }
 
     private static UUID uuid(JsonNode node, String field) {

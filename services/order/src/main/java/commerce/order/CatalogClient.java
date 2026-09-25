@@ -40,40 +40,43 @@ public class CatalogClient {
     }
 
     public CheckoutSnapshot snapshot(CheckoutRequest request, String bearer, String correlationId) {
-        CatalogProduct product;
+        var intent = request.normalizedItems();
+        CatalogProduct[] products;
         try {
-            product = client.get().uri("/api/v1/products/{id}", request.productId())
+            products = client.post().uri("/api/internal/v1/products/batch")
                     .headers(headers -> {
                         headers.setBearerAuth(bearer);
                         headers.set("X-Correlation-ID", correlationId);
-                    }).retrieve().body(CatalogProduct.class);
+                    }).body(java.util.Map.of("productIds", intent.stream().map(CheckoutRequest.Item::productId).toList()))
+                    .retrieve().body(CatalogProduct[].class);
         } catch (RestClientResponseException failure) {
-            if (failure.getStatusCode().value() == 404 || failure.getStatusCode().value() == 403) {
+            if (failure.getStatusCode().value() == 404 || failure.getStatusCode().value() == 403)
                 throw new ApiException(404, "PRODUCT_NOT_FOUND", "Product not found");
-            }
             throw unavailable();
-        } catch (RestClientException failure) {
-            throw unavailable();
+        } catch (RestClientException failure) { throw unavailable(); }
+        if (products == null || products.length != intent.size()) throw unavailable();
+        java.util.Map<UUID, CatalogProduct> byId = new java.util.HashMap<>();
+        for (CatalogProduct product : products) {
+            if (product == null || product.id() == null || product.active() == null || product.unitPriceMinor() == null
+                    || product.version() == null || byId.put(product.id(), product) != null) throw unavailable();
         }
-        if (product == null || !request.productId().equals(product.id()) || product.active() == null) {
-            throw unavailable();
-        }
-        if (!product.active()) {
-            throw new ApiException(409, "PRODUCT_UNAVAILABLE", "Product is not available for checkout");
-        }
-        if (product.unitPriceMinor() == null || product.version() == null) {
-            throw unavailable();
-        }
-        if (product.unitPriceMinor() == 0) {
-            throw new ApiException(422, "PRODUCT_UNAVAILABLE", "Zero-amount checkout is not supported");
-        }
+        var lines = new java.util.ArrayList<OrderLine>();
+        long total = 0;
         try {
-            long total = Math.multiplyExact(product.unitPriceMinor(), request.quantity());
-            return new CheckoutSnapshot(product.id(), request.quantity(), product.name(),
-                    product.unitPriceMinor(), total, product.currency(), product.version(), request.paymentMethod());
-        } catch (IllegalArgumentException | ArithmeticException failure) {
-            throw unavailable();
-        }
+            for (var item : intent) {
+                CatalogProduct product = byId.get(item.productId());
+                if (product == null) throw unavailable();
+                if (!product.active()) throw new ApiException(409, "PRODUCT_UNAVAILABLE", "Product is not available for checkout");
+                if (!"USD".equals(product.currency())) throw unavailable();
+                long lineTotal = Math.multiplyExact(product.unitPriceMinor(), item.quantity());
+                lines.add(new OrderLine(product.id(), item.quantity(), product.name(), product.unitPriceMinor(), lineTotal, product.version()));
+                total = Math.addExact(total, lineTotal);
+            }
+            if (total == 0) throw new ApiException(422, "PRODUCT_UNAVAILABLE", "Zero-amount checkout is not supported");
+            return new CheckoutSnapshot(lines, total, "USD", request.paymentMethod());
+        } catch (ArithmeticException overflow) {
+            throw new ApiException(422, "ORDER_TOTAL_OVERFLOW", "Checkout total exceeds the supported amount");
+        } catch (IllegalArgumentException failure) { throw unavailable(); }
     }
 
     private static ApiException unavailable() {

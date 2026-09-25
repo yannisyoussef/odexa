@@ -95,16 +95,22 @@ public class OrderRepository {
     /** PostgreSQL waits for a concurrent winner without aborting this transaction on conflict. */
     public boolean insert(Order order, String key, String fingerprint) {
         CheckoutSnapshot s = order.snapshot();
-        return jdbc.update("""
+        boolean inserted = jdbc.update("""
                 INSERT INTO customer_order (id, tenant_id, customer_id, idempotency_key, fingerprint,
-                    product_id, quantity, product_name, unit_price_minor, total_minor, currency,
-                    catalog_version, payment_method, status, version, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    total_minor, currency, payment_method, status, version, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (tenant_id, customer_id, idempotency_key) DO NOTHING
                 """, order.id(), order.tenantId(), order.customerId(), key, fingerprint,
-                s.productId(), s.quantity(), s.productName(), s.unitPriceMinor(), s.totalMinor(),
-                s.currency(), s.catalogVersion(), s.paymentMethod(), order.status().name(),
+                s.totalMinor(), s.currency(), s.paymentMethod(), order.status().name(),
                 order.version(), Timestamp.from(order.createdAt())) == 1;
+        if (inserted) {
+            for (OrderLine line : s.items()) jdbc.update("""
+                    INSERT INTO order_line(order_id, product_id, quantity, product_name, unit_price_minor,
+                        line_total_minor, catalog_version) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, order.id(), line.productId(), line.quantity(), line.productName(), line.unitPriceMinor(),
+                    line.lineTotalMinor(), line.catalogVersion());
+        }
+        return inserted;
     }
 
     public void save(Order order) {
@@ -123,15 +129,17 @@ public class OrderRepository {
         }
     }
 
-    private static Order map(ResultSet rs) throws SQLException {
+    private Order map(ResultSet rs) throws SQLException {
         UUID deferredEvent = rs.getObject("deferred_event_id", UUID.class);
         DeferredPayment deferred = deferredEvent == null ? null : new DeferredPayment(deferredEvent,
                 rs.getObject("deferred_causation_id", UUID.class),
                 rs.getObject("deferred_payment_id", UUID.class), rs.getBoolean("deferred_authorized"));
-        CheckoutSnapshot snapshot = new CheckoutSnapshot(rs.getObject("product_id", UUID.class),
-                rs.getInt("quantity"), rs.getString("product_name"), rs.getLong("unit_price_minor"),
-                rs.getLong("total_minor"), rs.getString("currency"), rs.getLong("catalog_version"),
-                rs.getString("payment_method"));
+        List<OrderLine> lines = jdbc.query("SELECT * FROM order_line WHERE order_id = ? ORDER BY product_id",
+                (line, row) -> new OrderLine(line.getObject("product_id", UUID.class), line.getInt("quantity"),
+                        line.getString("product_name"), line.getLong("unit_price_minor"),
+                        line.getLong("line_total_minor"), line.getLong("catalog_version")), rs.getObject("id", UUID.class));
+        CheckoutSnapshot snapshot = new CheckoutSnapshot(lines, rs.getLong("total_minor"),
+                rs.getString("currency"), rs.getString("payment_method"));
         return new Order(rs.getObject("id", UUID.class), rs.getObject("tenant_id", UUID.class),
                 rs.getString("customer_id"), snapshot, OrderStatus.valueOf(rs.getString("status")),
                 rs.getLong("version"), rs.getTimestamp("created_at").toInstant(),

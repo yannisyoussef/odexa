@@ -30,8 +30,8 @@ class CatalogClientTest {
     @Test
     void forwardsBearerAndCorrelationAndUsesAuthoritativeSnapshot() {
         String correlation = UUID.randomUUID().toString();
-        server.expect(requestTo("http://catalog.test/api/v1/products/" + productId))
-                .andExpect(method(HttpMethod.GET))
+        server.expect(requestTo("http://catalog.test/api/internal/v1/products/batch"))
+                .andExpect(method(HttpMethod.POST))
                 .andExpect(header("Authorization", "Bearer unused-test-jwt"))
                 .andExpect(header("X-Correlation-ID", correlation))
                 .andRespond(withSuccess(product("2500", "true", "USD"), MediaType.APPLICATION_JSON));
@@ -77,7 +77,7 @@ class CatalogClientTest {
 
     @Test
     void invalidOrOverflowingCatalogMoneyIsUnavailable() {
-        for (String body : new String[] {product("9223372036854775807", "true", "USD"),
+        for (String body : new String[] {
                 product("-1", "true", "USD"), product("2500", "true", "EUR"),
                 product("null", "true", "USD"), "{}", "not-json"}) {
             server.reset();
@@ -110,10 +110,46 @@ class CatalogClientTest {
                 () -> new CatalogClient("http://catalog.test", Duration.ofSeconds(2), Duration.ofSeconds(11)));
     }
 
+    @Test void multiplicationOverflowIsIntentional422() {
+        server.expect(anything()).andRespond(withSuccess(product("9223372036854775807", "true", "USD"), MediaType.APPLICATION_JSON));
+        var error = assertThrows(ApiException.class, () -> catalog.snapshot(request,"token",UUID.randomUUID().toString()));
+        assertEquals(422,error.status()); assertEquals("ORDER_TOTAL_OVERFLOW",error.code());
+    }
+
+    @Test void batchSnapshotIsAuthoritativeBoundedAndUnaffectedByLaterPriceChanges() {
+        UUID other = UUID.randomUUID();
+        var basket = new CheckoutRequest(java.util.List.of(new CheckoutRequest.Item(productId,2),new CheckoutRequest.Item(other,1)),"pm_approved");
+        String first = product("2500","true","USD");
+        String free = product("0","true","USD").replace(productId.toString(),other.toString());
+        server.expect(anything()).andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess(first.substring(0,first.lastIndexOf(']')) + "," + free.substring(free.indexOf('[')+1),MediaType.APPLICATION_JSON));
+        var accepted = catalog.snapshot(basket,"token",UUID.randomUUID().toString());
+        assertEquals(5000,accepted.totalMinor()); assertEquals(2,accepted.items().size());
+        server.reset();
+        server.expect(anything()).andRespond(withSuccess(product("3500","true","USD"),MediaType.APPLICATION_JSON));
+        assertEquals(7000,catalog.snapshot(request,"token",UUID.randomUUID().toString()).totalMinor());
+        assertEquals(5000,accepted.totalMinor());
+    }
+
+    @Test void maximumTwentyLineBasketSucceedsAndSumOverflowFailsIntentionally() {
+        var items = java.util.stream.IntStream.range(0,20).mapToObj(i -> new CheckoutRequest.Item(UUID.randomUUID(),100)).toList();
+        String body = items.stream().map(i -> product("1","true","USD").replace(productId.toString(),i.productId().toString()).trim())
+                .map(text -> text.substring(1,text.length()-1)).collect(java.util.stream.Collectors.joining(",","[","]"));
+        server.expect(anything()).andRespond(withSuccess(body,MediaType.APPLICATION_JSON));
+        var accepted = catalog.snapshot(new CheckoutRequest(items,"pm_approved"),"token",UUID.randomUUID().toString());
+        assertEquals(20,accepted.items().size()); assertEquals(2000,accepted.totalMinor());
+        server.reset();
+        var overflowItems = items.subList(0,2).stream().map(i -> new CheckoutRequest.Item(i.productId(),1)).toList();
+        String large = overflowItems.stream().map(i -> product("9223372036854775807","true","USD").replace(productId.toString(),i.productId().toString()).trim())
+                .map(text -> text.substring(1,text.length()-1)).collect(java.util.stream.Collectors.joining(",","[","]"));
+        server.expect(anything()).andRespond(withSuccess(large,MediaType.APPLICATION_JSON));
+        assertEquals("ORDER_TOTAL_OVERFLOW",assertThrows(ApiException.class,() -> catalog.snapshot(new CheckoutRequest(overflowItems,"pm_approved"),"token",UUID.randomUUID().toString())).code());
+    }
+
     private String product(String price, String active, String currency) {
         return """
-                {"id":"%s","name":"Odexa tote","description":"Canvas tote",
-                 "unitPriceMinor":%s,"currency":"%s","active":%s,"version":7}
+                [{"id":"%s","name":"Odexa tote","description":"Canvas tote",
+                 "unitPriceMinor":%s,"currency":"%s","active":%s,"version":7}]
                 """.formatted(productId, price, currency, active);
     }
 }
