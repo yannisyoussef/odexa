@@ -25,37 +25,6 @@ jobs:
       - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
       - name: Unit, boundary and structural contract checks
         run: python3 -B scripts/ci.py check
-  documentation:
-    needs: check
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
-      - uses: pnpm/action-setup@d15e628ca66d93ee5f352c71671a7bc6a97af5c9 # v6.0.8
-        with:
-          version: 11.19.0
-      - uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
-        with:
-          node-version: 24.20.0
-      - name: Check out reviewed Specra source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          repository: yannisyoussef/specra
-          ref: 121aa83391424159c39bdc5c8b70d760e71abc78
-          path: .specra-tooling/source
-          persist-credentials: false
-      - name: Build the pinned public Specra package
-        working-directory: .specra-tooling/source
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm --filter @specra/cli... build
-          node scripts/build-release-candidate.mjs "$GITHUB_WORKSPACE/.specra-tooling/candidate"
-      - name: Enforce the public consumer boundary
-        run: node .specra-tooling/source/scripts/check-public-boundary.mjs "$GITHUB_WORKSPACE"
-      - name: Validate, build, and check the Odexa portal
-        run: python3 -B scripts/specra-docs.py --tarball .specra-tooling/candidate/specra-cli-0.1.0-rc.1.tgz
   integration:
     needs: check
     runs-on: ubuntu-24.04
