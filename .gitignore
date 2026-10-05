@@ -7,4 +7,6 @@
 .DS_Store
 *.log
 /local/
+/node_modules/
+/.specra/
 /prompts/
