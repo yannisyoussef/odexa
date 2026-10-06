@@ -1,4 +1,4 @@
-import { defineConfig } from "@specra/config";
+import { defineConfig } from "@specistry/config";
 
 export default defineConfig({
   schemaVersion: 1,

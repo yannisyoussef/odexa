@@ -10,7 +10,7 @@ and alerting remain deployment-owner work.
 
 CI validates real contract structure, service tests, infrastructure integration
 tests, and a repeated compose smoke with preserved database volumes. The
-developer portal adds a packed Specra build and quality gate against the same
+developer portal adds a packed Specistry build and quality gate against the same
 contracts, preventing documentation copies from drifting.
 
 Logs may include bounded correlation identifiers, route templates, status
