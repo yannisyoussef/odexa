@@ -8,5 +8,5 @@
 *.log
 /local/
 /node_modules/
-/.specra/
+/.specistry/
 /prompts/

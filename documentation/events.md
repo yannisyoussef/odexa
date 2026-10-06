@@ -18,4 +18,4 @@ historical outboxes and replay. Services must be upgraded together; rolling
 mixed event-schema versions are unsupported.
 
 This page is authored guidance. The source AsyncAPI contract remains
-authoritative, and Specra does not ingest it in this release.
+authoritative, and Specistry does not ingest it in this release.
